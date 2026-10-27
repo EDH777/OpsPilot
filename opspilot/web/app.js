@@ -1,0 +1,967 @@
+/* OpsPilot 前端：原生 JS，无构建、无 CDN。
+   - 驾驶舱：KPI / 趋势 / 对比 / 告警
+   - 工作台：SSE 流式对话 + 执行轨迹 + 报告卡片
+   - 报告中心：历史报告
+   图表全部用手写 SVG，保证内网/离线可用。 */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+const PALETTE = ["#ea580c", "#2563eb", "#0f9d6e", "#9333ea", "#d97706", "#0891b2"];
+
+const state = {
+  view: "dashboard",
+  sessionId: null,
+  runId: null,
+  streaming: false,
+  runs: [],
+  reports: [],
+  dashboard: null,
+  budget: null,
+  traceItems: new Map(),
+  stepBubbles: new Map(),
+};
+
+document.addEventListener("DOMContentLoaded", init);
+
+async function init() {
+  bindNav();
+  bindComposer();
+  bindExamples();
+  $("#new-investigation").addEventListener("click", () => {
+    resetWorkbench();
+    switchView("workbench");
+    $("#input").focus();
+  });
+  await checkHealth();
+  await Promise.all([loadDashboard(), loadRuns(), loadReports()]);
+
+  // 深链：/#/run/<run_id> 直接打开某次调查（便于分享与演示）
+  const m = location.hash.match(/#\/run\/([A-Za-z0-9_]+)/);
+  if (m) openRun(m[1]);
+}
+
+/* ------------------------------------------------------------------ 导航 */
+
+function bindNav() {
+  $$(".nav-item").forEach((btn) => {
+    btn.addEventListener("click", () => switchView(btn.dataset.view));
+  });
+}
+
+const PAGE_META = {
+  dashboard: ["业务驾驶舱", "生产 · 能耗 · 设备数据统一视图"],
+  workbench: ["AI 调查工作台", "自然语言提问 → 自主取证 → 可追溯报告"],
+  reports: ["报告中心", "历史调查结论与证据"],
+};
+
+function switchView(name) {
+  state.view = name;
+  $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === name));
+  $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  const [title, sub] = PAGE_META[name] || ["", ""];
+  $("#page-title").textContent = title;
+  $("#page-sub").textContent = sub;
+}
+
+/* ------------------------------------------------------------------ 健康检查 */
+
+async function checkHealth() {
+  try {
+    const r = await fetch("/api/health");
+    const h = await r.json();
+    $("#llm-pill").textContent = `模型 ${h.model}`;
+    const dot = $("#status-dot");
+    if (h.llm_configured && h.database.ready) {
+      dot.className = "status-dot ok";
+      $("#model-status").textContent = "模型与数据源已就绪";
+    } else if (!h.llm_configured) {
+      dot.className = "status-dot bad";
+      $("#model-status").textContent = "未配置模型密钥（可离线演示）";
+    } else {
+      dot.className = "status-dot bad";
+      $("#model-status").textContent = "数据库未生成";
+    }
+  } catch (e) {
+    $("#model-status").textContent = "服务未响应";
+  }
+}
+
+/* ------------------------------------------------------------------ 驾驶舱 */
+
+async function loadDashboard() {
+  try {
+    const r = await fetch("/api/dashboard?days=30");
+    if (!r.ok) throw new Error(await r.text());
+    state.dashboard = await r.json();
+    renderKpis(state.dashboard.kpis);
+    renderTrend(state.dashboard.unit_energy_trend);
+    renderCompare(state.dashboard.workshop_compare);
+    renderAnomalies(state.dashboard.anomalies, state.dashboard.data_quality);
+    renderAlarms(state.dashboard.alarms_by_workshop);
+    $("#page-sub").textContent = `统计区间 ${state.dashboard.period.start} ~ ${state.dashboard.period.end}`;
+  } catch (e) {
+    console.error(e);
+    $("#kpis").innerHTML = `<div class="anomaly-list-empty">驾驶舱数据加载失败：${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function renderKpis(kpis) {
+  const el = $("#kpis");
+  el.innerHTML = kpis
+    .map((k) => {
+      let deltaHtml = "";
+      if (k.delta_pct !== null && k.delta_pct !== undefined) {
+        const up = k.delta_pct >= 0;
+        const good = k.inverse ? !up : up;
+        const cls = good ? "delta-good" : "delta-bad";
+        deltaHtml = `<div class="kpi-delta"><span class="${cls}">${up ? "▲" : "▼"} ${Math.abs(k.delta_pct).toFixed(1)}%</span><span>较上期</span></div>`;
+      } else {
+        deltaHtml = `<div class="kpi-delta"><span>本期</span></div>`;
+      }
+      const value = Number(k.value).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+      return `<div class="kpi ${k.highlight ? "highlight" : ""}">
+        <div class="kpi-label">${esc(k.label)}</div>
+        <div class="kpi-value">${value}<span class="kpi-unit">${esc(k.unit || "")}</span></div>
+        ${deltaHtml}
+      </div>`;
+    })
+    .join("");
+}
+
+function renderTrend(trend) {
+  if (!trend || !trend.dates.length) {
+    $("#trend-chart").innerHTML = `<div class="anomaly-list-empty">暂无数据</div>`;
+    return;
+  }
+  $("#trend-legend").innerHTML = trend.series
+    .map((s, i) => `<span><i style="background:${PALETTE[i % PALETTE.length]}"></i>${esc(s.name)}</span>`)
+    .join("");
+  $("#trend-chart").innerHTML = lineChart(trend.dates, trend.series, { height: 268 });
+}
+
+function renderCompare(cmp) {
+  if (!cmp || !cmp.workshops.length) {
+    $("#compare-chart").innerHTML = `<div class="anomaly-list-empty">暂无数据</div>`;
+    return;
+  }
+  $("#compare-chart").innerHTML = groupedBarChart(cmp.workshops, cmp.previous, cmp.current, { height: 240 });
+}
+
+function renderAnomalies(anomalies, dataQuality = []) {
+  const el = $("#anomalies");
+  const dq = (dataQuality || [])
+    .map(
+      (d) => `<div class="anomaly warn">
+        <div class="a-main">
+          <div class="a-title">${esc(d.workshop_name)}</div>
+          <div class="a-sub">${esc(d.issue)} · ${esc(d.hint || "")}</div>
+        </div>
+        <span class="ti-badge warn">数据缺失</span>
+      </div>`
+    )
+    .join("");
+  if ((!anomalies || !anomalies.length) && !dq) {
+    el.innerHTML = `<div class="anomaly-list-empty">本期没有超过阈值的指标变化。</div>`;
+    return;
+  }
+  const items = (anomalies || [])
+    .map(
+      (a) => `<div class="anomaly">
+        <div class="a-main">
+          <div class="a-title">${esc(a.workshop_name)}</div>
+          <div class="a-sub">${esc(a.metric)} ${a.previous} → ${a.current} ${esc(a.unit)}</div>
+        </div>
+        <div class="a-val">${a.change_pct > 0 ? "+" : ""}${a.change_pct}%</div>
+        <button class="a-go" data-ws="${esc(a.workshop_id)}">调查</button>
+      </div>`
+    )
+    .join("");
+  el.innerHTML = items + dq;
+  $$(".a-go", el).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const name = btn.closest(".anomaly").querySelector(".a-title").textContent;
+      const q = `${name}最近30天的单位产品电耗偏离基线，请调查原因并给出证据和可执行的改进建议。`;
+      resetWorkbench();
+      switchView("workbench");
+      $("#input").value = q;
+      sendMessage(q);
+    });
+  });
+}
+
+function renderAlarms(rows) {
+  const el = $("#alarms");
+  if (!rows || !rows.length) {
+    el.innerHTML = `<div class="anomaly-list-empty">本期无告警。</div>`;
+    return;
+  }
+  const max = Math.max(...rows.map((r) => r.count), 1);
+  el.innerHTML = rows
+    .map(
+      (r) => `<div class="alarm-row">
+        <span class="al-name">${esc(r.workshop_name)}</span>
+        <span class="bar"><i style="width:${Math.round((r.count / max) * 100)}%"></i></span>
+        <span class="al-num">${r.count}</span>
+      </div>`
+    )
+    .join("");
+}
+
+/* ------------------------------------------------------------------ 图表（SVG） */
+
+function niceTicks(min, max, count = 4) {
+  const span = max - min || 1;
+  const step = span / count;
+  return Array.from({ length: count + 1 }, (_, i) => min + step * i);
+}
+
+function lineChart(labels, series, { height = 260 } = {}) {
+  const W = 820, H = height, padL = 46, padR = 16, padT = 14, padB = 28;
+  const values = series.flatMap((s) => s.data).filter((v) => v !== null && v !== undefined);
+  if (!values.length) return "";
+  let min = Math.min(...values), max = Math.max(...values);
+  const pad = (max - min || max * 0.1) * 0.15;
+  min = Math.max(0, min - pad);
+  max = max + pad;
+  const x = (i) => padL + (i * (W - padL - padR)) / Math.max(labels.length - 1, 1);
+  const y = (v) => padT + (1 - (v - min) / (max - min || 1)) * (H - padT - padB);
+
+  const ticks = niceTicks(min, max);
+  let g = "";
+  ticks.forEach((t) => {
+    g += `<line x1="${padL}" y1="${y(t).toFixed(1)}" x2="${W - padR}" y2="${y(t).toFixed(1)}" stroke="#eef1f6" stroke-width="1"/>`;
+    g += `<text x="${padL - 8}" y="${(y(t) + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#98a2b3">${t.toFixed(2)}</text>`;
+  });
+
+  const labelStep = Math.ceil(labels.length / 7);
+  labels.forEach((d, i) => {
+    if (i % labelStep !== 0 && i !== labels.length - 1) return;
+    g += `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#98a2b3">${esc(d.slice(5))}</text>`;
+  });
+
+  let paths = "";
+  series.forEach((s, si) => {
+    const color = PALETTE[si % PALETTE.length];
+    let d = "", started = false;
+    s.data.forEach((v, i) => {
+      if (v === null || v === undefined) { started = false; return; }
+      d += `${started ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)} `;
+      started = true;
+    });
+    paths += `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const lastIdx = s.data.reduce((acc, v, i) => (v !== null && v !== undefined ? i : acc), -1);
+    if (lastIdx >= 0) {
+      paths += `<circle cx="${x(lastIdx).toFixed(1)}" cy="${y(s.data[lastIdx]).toFixed(1)}" r="3" fill="${color}"/>`;
+    }
+  });
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">${g}${paths}</svg>`;
+}
+
+function groupedBarChart(labels, previous, current, { height = 240 } = {}) {
+  const W = 820, H = height, padL = 46, padR = 16, padT = 14, padB = 30;
+  const values = [...previous, ...current].filter((v) => v !== null && v !== undefined);
+  const max = Math.max(...values, 1) * 1.15;
+  const y = (v) => padT + (1 - v / max) * (H - padT - padB);
+  const groupW = (W - padL - padR) / labels.length;
+  const barW = Math.min(26, groupW * 0.3);
+
+  let g = "";
+  niceTicks(0, max).forEach((t) => {
+    g += `<line x1="${padL}" y1="${y(t).toFixed(1)}" x2="${W - padR}" y2="${y(t).toFixed(1)}" stroke="#eef1f6"/>`;
+    g += `<text x="${padL - 8}" y="${(y(t) + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#98a2b3">${t.toFixed(1)}</text>`;
+  });
+
+  labels.forEach((name, i) => {
+    const cx = padL + groupW * i + groupW / 2;
+    const pv = previous[i], cv = current[i];
+    if (pv !== null && pv !== undefined) {
+      g += `<rect x="${(cx - barW - 3).toFixed(1)}" y="${y(pv).toFixed(1)}" width="${barW}" height="${(H - padB - y(pv)).toFixed(1)}" rx="3" fill="#cbd5e1"/>`;
+    }
+    if (cv !== null && cv !== undefined) {
+      g += `<rect x="${(cx + 3).toFixed(1)}" y="${y(cv).toFixed(1)}" width="${barW}" height="${(H - padB - y(cv)).toFixed(1)}" rx="3" fill="#ea580c"/>`;
+    }
+    g += `<text x="${cx.toFixed(1)}" y="${H - 9}" text-anchor="middle" font-size="10" fill="#667085">${esc(name)}</text>`;
+  });
+
+  const legend = `<g>
+    <rect x="${W - 190}" y="10" width="8" height="8" rx="2" fill="#cbd5e1"/><text x="${W - 177}" y="17" font-size="10" fill="#667085">上期</text>
+    <rect x="${W - 130}" y="10" width="8" height="8" rx="2" fill="#ea580c"/><text x="${W - 117}" y="17" font-size="10" fill="#667085">本期</text>
+  </g>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">${g}${legend}</svg>`;
+}
+
+/* ------------------------------------------------------------------ 工作台：输入 */
+
+function bindComposer() {
+  $("#send").addEventListener("click", () => {
+    const text = $("#input").value.trim();
+    if (text) sendMessage(text);
+  });
+  $("#input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      const text = $("#input").value.trim();
+      if (text) sendMessage(text);
+    }
+  });
+}
+
+function bindExamples() {
+  $$(".example").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      $("#input").value = btn.textContent.trim();
+      $("#input").focus();
+    });
+  });
+}
+
+function resetWorkbench() {
+  state.sessionId = null;
+  state.runId = null;
+  state.report = null;
+  state.traceItems.clear();
+  state.stepBubbles.clear();
+  $("#messages").innerHTML = "";
+  $("#trace").innerHTML = `<div class="trace-empty">每一步模型决策、工具调用、错误与重试都会出现在这里。</div>`;
+  $("#trace-meta").textContent = "尚未开始";
+  $("#budget").innerHTML = "";
+  $("#live-dot").classList.remove("on");
+}
+
+function addMessage(role, html) {
+  const empty = $("#chat-empty");
+  if (empty) empty.remove();
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+  wrap.innerHTML =
+    role === "assistant"
+      ? `<div class="avatar">OP</div><div class="bubble">${html}</div>`
+      : `<div class="bubble">${html}</div>`;
+  $("#messages").appendChild(wrap);
+  scrollChat();
+  return wrap;
+}
+
+function addActivityBubble(step) {
+  if (state.stepBubbles.has(step)) return state.stepBubbles.get(step);
+  const wrap = addMessage("assistant", "");
+  state.stepBubbles.set(step, wrap.querySelector(".bubble"));
+  return wrap.querySelector(".bubble");
+}
+
+function scrollChat() {
+  const el = $("#messages");
+  el.scrollTop = el.scrollHeight;
+}
+
+function setThinking(text) {
+  let el = $("#thinking");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "thinking";
+    el.className = "thinking";
+    el.innerHTML = `<span class="pulse"></span><span class="t"></span>`;
+    $("#messages").appendChild(el);
+  }
+  $(".t", el).textContent = text;
+  scrollChat();
+}
+
+function clearThinking() {
+  const el = $("#thinking");
+  if (el) el.remove();
+}
+
+/* ------------------------------------------------------------------ 工作台：SSE */
+
+async function sendMessage(text) {
+  if (state.streaming) return;
+  state.streaming = true;
+  $("#send").disabled = true;
+  addMessage("user", esc(text).replace(/\n/g, "<br>"));
+  $("#input").value = "";
+  setThinking("正在启动调查…");
+  $("#live-dot").classList.add("on");
+
+  const payload = { message: text, session_id: state.sessionId, mock: $("#mock-toggle").checked };
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok || !resp.body) {
+      const err = await resp.text();
+      throw new Error(err);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        try {
+          handleEvent(JSON.parse(line.slice(6)));
+        } catch (e) {
+          console.error("bad event", e, chunk);
+        }
+      }
+    }
+  } catch (e) {
+    clearThinking();
+    addMessage("assistant", `<p style="color:#b42318">请求失败：${esc(String(e.message || e))}</p>`);
+  } finally {
+    state.streaming = false;
+    $("#send").disabled = false;
+    $("#live-dot").classList.remove("on");
+    clearThinking();
+    loadRuns();
+  }
+}
+
+function handleEvent(ev) {
+  const d = ev.data || {};
+  switch (ev.type) {
+    case "run_started": {
+      state.runId = ev.run_id;
+      state.sessionId = d.session_id;
+      state.budget = d.budget;
+      $("#trace").innerHTML = "";
+      state.traceItems.clear();
+      state.stepBubbles.clear();
+      $("#trace-meta").textContent = `run ${ev.run_id.slice(4, 12)} · ${d.model}`;
+      appendTraceNote(`开始调查 · ${d.tools.length} 个工具可用`, "info");
+      renderBudget(d.budget, null);
+      setThinking("正在理解问题…");
+      break;
+    }
+    case "llm_request":
+      setThinking(`第 ${d.step} 步 · 模型推理中（上下文 ${d.messages} 条 / ~${d.est_tokens} tokens）`);
+      break;
+    case "llm_response": {
+      clearThinking();
+      if (d.content) {
+        addMessage("assistant", md(d.content));
+      }
+      if (d.tool_calls && d.tool_calls.length) {
+        addActivityBubble(d.step);
+      }
+      if (d.finish_reason === "length") {
+        appendTraceNote("模型输出被 max_tokens 截断，参数可能不完整", "warn");
+      }
+      break;
+    }
+    case "assistant_message":
+      break;
+    case "tool_started": {
+      const bubble = ensureActivityBubble();
+      const chip = document.createElement("span");
+      chip.className = "tool-chip";
+      chip.dataset.call = d.call_id;
+      chip.innerHTML = `<span class="dot"></span>${esc(d.name)}`;
+      bubble.appendChild(chip);
+      addTraceItem(d);
+      break;
+    }
+    case "tool_finished": {
+      const chip = $(`.tool-chip[data-call="${cssEscape(d.call_id)}"]`);
+      if (chip) chip.classList.add(d.ok ? "ok" : "fail");
+      updateTraceItem(d);
+      break;
+    }
+    case "arg_repaired":
+      appendNoteToTrace(d.call_id, `Harness 自动修复参数：${(d.repairs || []).join("；")}`);
+      break;
+    case "tool_retry":
+      appendNoteToTrace(d.call_id, `第 ${d.attempt} 次重试（${d.kind}）`, "warn");
+      break;
+    case "context_compacted":
+      if (d.compacted) appendTraceNote(`上下文压缩：省略 ${d.dropped_messages} 条早期消息`, "info");
+      break;
+    case "checkpoint":
+      break;
+    case "loop_guard":
+      appendTraceNote(`熔断：${d.name} 连续失败，已提示模型换路径`, "warn");
+      break;
+    case "llm_truncated":
+      appendTraceNote(d.message, "warn");
+      break;
+    case "budget_exceeded":
+      appendTraceNote(`预算超限：${d.message}`, "bad");
+      break;
+    case "budget_warning":
+      appendTraceNote(d.message, "warn");
+      break;
+    case "error":
+      appendTraceNote(`错误：${d.message}`, "bad");
+      break;
+    case "report":
+      state.report = d.report;
+      addReportCard(d.report);
+      scrollChat();
+      break;
+    case "run_finished": {
+      clearThinking();
+      renderBudget(d.budget, d.usage);
+      const ok = d.status === "completed";
+      appendTraceNote(
+        `${ok ? "完成" : "结束"} · ${d.budget.steps} 步 / ${d.budget.tool_calls} 次工具 / ${d.usage.total_tokens} tokens / ${(d.duration_ms / 1000).toFixed(1)}s`,
+        ok ? "ok" : "bad"
+      );
+      if (!ok && d.error) appendTraceNote(d.error, "bad");
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function ensureActivityBubble() {
+  const keys = Array.from(state.stepBubbles.keys());
+  if (keys.length) return state.stepBubbles.get(keys[keys.length - 1]);
+  const last = $("#messages").lastElementChild;
+  if (last && last.classList.contains("msg") && last.classList.contains("assistant")) {
+    const bubble = last.querySelector(".bubble");
+    state.stepBubbles.set("last", bubble);
+    return bubble;
+  }
+  const wrap = addMessage("assistant", "");
+  const bubble = wrap.querySelector(".bubble");
+  state.stepBubbles.set("last", bubble);
+  return bubble;
+}
+
+/* ------------------------------------------------------------------ 轨迹面板 */
+
+function addTraceItem(d) {
+  const el = document.createElement("div");
+  el.className = "trace-item running";
+  el.dataset.call = d.call_id;
+  el.innerHTML = `
+    <div class="ti-head">
+      <span class="ti-name">${esc(d.name)}</span>
+      <span class="ti-badge info" data-role="status">运行中</span>
+      <span class="ti-time" data-role="time"></span>
+    </div>
+    <div class="ti-summary">${esc(argSummary(d))}</div>
+    <div class="ti-note" data-role="note"></div>
+    <details class="ti-detail">
+      <summary>参数与结果</summary>
+      <pre class="ti-args">${esc(prettyArgs(d.arguments))}</pre>
+      <pre data-role="preview">—</pre>
+    </details>`;
+  $("#trace").appendChild(el);
+  state.traceItems.set(d.call_id, el);
+  $("#trace").scrollTop = $("#trace").scrollHeight;
+}
+
+function argSummary(d) {
+  try {
+    const o = JSON.parse(d.arguments || "{}");
+    if (o.purpose) return o.purpose;
+    if (o.sql) return `SQL · ${String(o.sql).replace(/\s+/g, " ").slice(0, 110)}`;
+    if (o.code) return "Python 分析代码（见参数与结果）";
+    if (o.workshop_id) return `${o.workshop_id} ${o.start_date || ""}${o.end_date ? " ~ " + o.end_date : ""}`;
+    if (o.month) return `月份 ${o.month}`;
+    if (o.table) return `表 ${o.table}`;
+    if (o.title) return `报告：${o.title}`;
+    const keys = Object.keys(o);
+    if (!keys.length) return "无参数";
+    return keys.slice(0, 3).map((k) => `${k}=${String(o[k]).slice(0, 40)}`).join(" · ");
+  } catch {
+    return String(d.arguments || "").slice(0, 110);
+  }
+}
+
+function updateTraceItem(d) {
+  const el = state.traceItems.get(d.call_id);
+  if (!el) return;
+  el.classList.remove("running");
+  el.classList.add(d.ok ? "ok" : "fail");
+  const badge = $('[data-role="status"]', el);
+  badge.className = `ti-badge ${d.ok ? "ok" : "fail"}`;
+  badge.textContent = d.ok ? "成功" : (d.error ? d.error.kind : "失败");
+  $('[data-role="time"]', el).textContent = `${d.latency_ms}ms`;
+  if (d.error) {
+    const note = $('[data-role="note"]', el);
+    note.classList.add("bad");
+    note.textContent = d.error.message + (d.error.hint ? ` · ${d.error.hint}` : "");
+  }
+  if (d.preview) {
+    const pre = $('[data-role="preview"]', el);
+    pre.textContent = typeof d.preview === "string" ? d.preview.slice(0, 1200) : JSON.stringify(d.preview, null, 2).slice(0, 1200);
+  }
+}
+
+function appendNoteToTrace(callId, text, kind = "") {
+  const el = state.traceItems.get(callId);
+  if (!el) return;
+  const note = $('[data-role="note"]', el);
+  note.textContent = (note.textContent ? note.textContent + "；" : "") + text;
+  if (kind === "warn") note.style.color = "#b54708";
+  if (kind === "bad") note.classList.add("bad");
+}
+
+function appendTraceNote(text, kind = "") {
+  const el = document.createElement("div");
+  el.className = "trace-item";
+  el.innerHTML = `<div class="ti-head"><span class="ti-name" style="font-family:inherit;font-weight:500;color:#667085">${esc(text)}</span></div>`;
+  if (kind) el.style.borderLeftColor = kind === "bad" ? "#f6cfcc" : kind === "warn" ? "#f3ddb5" : "#d8defb";
+  $("#trace").appendChild(el);
+  $("#trace").scrollTop = $("#trace").scrollHeight;
+}
+
+function prettyArgs(raw) {
+  if (!raw) return "{}";
+  try {
+    const obj = JSON.parse(raw);
+    return JSON.stringify(obj, null, 1).slice(0, 400);
+  } catch {
+    return String(raw).slice(0, 400);
+  }
+}
+
+function renderBudget(budget, usage) {
+  if (!budget) return;
+  const rows = [
+    ["步数", budget.steps, budget.max_steps],
+    ["工具", budget.tool_calls, budget.max_tool_calls],
+    ["Token", (usage && usage.total_tokens) || budget.tokens || 0, budget.max_tokens],
+  ];
+  $("#budget").innerHTML = rows
+    .map(([label, val, max]) => {
+      const pct = Math.min(100, Math.round((val / max) * 100));
+      return `<div class="brow">
+        <span class="blabel">${label}</span>
+        <span class="bbar"><i class="${pct > 80 ? "hot" : ""}" style="width:${pct}%"></i></span>
+        <span class="bval">${val}/${max}</span>
+      </div>`;
+    })
+    .join("");
+}
+
+/* ------------------------------------------------------------------ 报告 */
+
+function addReportCard(report) {
+  const el = document.createElement("div");
+  el.className = "report-card";
+  el.innerHTML = renderReportHtml(report, state.runId);
+  $("#messages").appendChild(el);
+  bindReportActions(el);
+}
+
+function renderReportHtml(report, runId) {
+  const badge = (c) =>
+    c === "已验证事实" ? "verified" : c === "证据支持" ? "supported" : "unverified";
+  const metrics = (report.metrics || [])
+    .map(
+      (m) => `<div class="rc-metric">
+        <div class="m-name">${esc(m.name)}</div>
+        <div class="m-val">${Number(m.value).toLocaleString("zh-CN", { maximumFractionDigits: 3 })}<span class="m-unit">${esc(m.unit || "")}</span></div>
+        <div class="m-period">${esc(m.period || "")}</div>
+      </div>`
+    )
+    .join("");
+  const findings = (report.findings || [])
+    .map(
+      (f) => `<div class="finding">
+        <span class="badge ${badge(f.confidence)}">${esc(f.confidence)}</span>
+        <div class="f-main">
+          <div class="f-statement">${esc(f.statement)}</div>
+          <div class="f-evidence">证据：${esc(f.evidence)}</div>
+        </div>
+      </div>`
+    )
+    .join("");
+  const recs = (report.recommendations || []).map((r) => `<li>${esc(r)}</li>`).join("");
+  const limits = (report.limitations || []).map((r) => `<li>${esc(r)}</li>`).join("");
+
+  return `<div class="rc-head"><h3>${esc(report.title || "调查报告")}</h3>
+      <div class="rc-sub">OpsPilot 自主调查 · 所有数字来自工具查询结果</div></div>
+    <div class="rc-body">
+      <p class="rc-summary">${esc(report.summary || "")}</p>
+      ${metrics ? `<div class="rc-metrics">${metrics}</div>` : ""}
+      <div class="rc-h">结论与证据</div>${findings}
+      <div class="rc-cols">
+        <div><div class="rc-h">改进建议</div><ul class="rc-list">${recs || "<li>—</li>"}</ul></div>
+        <div><div class="rc-h">局限与待核实</div><ul class="rc-list">${limits || "<li>—</li>"}</ul></div>
+      </div>
+      <div class="rc-foot">
+        ${runId ? `<a class="btn ghost" href="/api/runs/${runId}/report.md" download>下载 Markdown</a>` : ""}
+        <a class="btn ghost" href="/api/runs/${runId}/events" target="_blank">查看完整 Trace</a>
+      </div>
+    </div>`;
+}
+
+function bindReportActions(root) {
+  // 下载与 trace 都是普通链接，无需额外处理
+}
+
+/* ------------------------------------------------------------------ 历史 */
+
+async function loadRuns() {
+  try {
+    const r = await fetch("/api/runs?limit=20");
+    const data = await r.json();
+    state.runs = data.runs || [];
+    const el = $("#session-list");
+    if (!state.runs.length) {
+      el.innerHTML = `<div class="side-empty">暂无记录</div>`;
+      return;
+    }
+    el.innerHTML = state.runs
+      .map(
+        (run) => `<button class="session-item" data-run="${run.run_id}">
+          <span class="si-title">${esc(run.title || run.task || "未命名调查")}</span>
+          <span class="st"><span>${statusText(run.status)}</span>·<span>${relTime(run.created_at)}</span></span>
+        </button>`
+      )
+      .join("");
+    $$(".session-item", el).forEach((btn) =>
+      btn.addEventListener("click", () => openRun(btn.dataset.run))
+    );
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function openRun(runId) {
+  switchView("workbench");
+  resetWorkbench();
+  state.runId = runId;
+  try {
+    const [runResp, evResp] = await Promise.all([
+      fetch(`/api/runs/${runId}`).then((r) => r.json()),
+      fetch(`/api/runs/${runId}/events`).then((r) => r.json()),
+    ]);
+    const run = runResp.run;
+    state.sessionId = run.session_id;
+    $("#trace-meta").textContent = `run ${runId.slice(4, 12)} · ${statusText(run.status)}`;
+    const task = run.task || "";
+    if (task) addMessage("user", esc(task));
+
+    const toolNames = evResp.events
+      .filter((e) => e.type === "tool_finished")
+      .map((e) => e.data.name);
+    if (toolNames.length) {
+      const wrap = addMessage("assistant", "");
+      const bubble = wrap.querySelector(".bubble");
+      const groups = [];
+      for (const n of toolNames) {
+        const last = groups[groups.length - 1];
+        if (last && last.name === n) last.count += 1;
+        else groups.push({ name: n, count: 1 });
+      }
+      bubble.innerHTML =
+        `<div class="activity-caption">本次调查执行了 ${toolNames.length} 次工具调用</div>` +
+        groups
+          .map(
+            (g) =>
+              `<span class="tool-chip ok"><span class="dot"></span>${esc(g.name)}${g.count > 1 ? ` ×${g.count}` : ""}</span>`
+          )
+          .join("");
+    }
+
+    let sawReport = false;
+    for (const ev of evResp.events) {
+      if (ev.type === "tool_started") {
+        addTraceItem(ev.data);
+        state.traceItems.get(ev.data.call_id).classList.remove("running");
+      } else if (ev.type === "tool_finished") {
+        updateTraceItem(ev.data);
+      } else if (ev.type === "assistant_message") {
+        addMessage("assistant", md(ev.data.content || ""));
+      } else if (ev.type === "report") {
+        addReportCard(ev.data.report);
+        sawReport = true;
+      } else if (ev.type === "run_finished") {
+        renderBudget(ev.data.budget, ev.data.usage);
+        appendTraceNote(
+          `${statusText(ev.data.status)} · ${ev.data.budget.steps} 步 / ${ev.data.usage.total_tokens} tokens`,
+          ev.data.status === "completed" ? "ok" : "bad"
+        );
+      }
+    }
+    if (run.report && !sawReport) addReportCard(run.report);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function loadReports() {
+  try {
+    const r = await fetch("/api/reports");
+    const data = await r.json();
+    state.reports = data.reports || [];
+    const el = $("#report-list");
+    if (!state.reports.length) {
+      el.innerHTML = `<div class="side-empty">还没有报告，先去工作台跑一次调查。</div>`;
+      return;
+    }
+    el.innerHTML = state.reports
+      .map(
+        (rep) => `<button class="report-item" data-run="${rep.run_id}">
+          <div class="ri-title">${esc(rep.title || rep.task || "调查报告")}</div>
+          <div class="ri-meta">${relTime(rep.created_at)} · ${statusText(rep.status)}</div>
+        </button>`
+      )
+      .join("");
+    $$(".report-item", el).forEach((btn) =>
+      btn.addEventListener("click", () => showReport(btn.dataset.run))
+    );
+    showReport(state.reports[0].run_id);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function showReport(runId) {
+  $$(".report-item").forEach((b) => b.classList.toggle("active", b.dataset.run === runId));
+  try {
+    const r = await fetch(`/api/runs/${runId}`);
+    const { run } = await r.json();
+    if (!run || !run.report) {
+      $("#report-detail").innerHTML = `<div class="empty-state small"><p>该运行没有结构化报告。</p></div>`;
+      return;
+    }
+    $("#report-detail").innerHTML = `<div class="report-card" style="margin-top:0">${renderReportHtml(run.report, runId)}</div>`;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function statusText(status) {
+  return {
+    running: "进行中",
+    completed: "已完成",
+    failed: "失败",
+    paused: "已暂停",
+    cancelled: "已取消",
+    budget_exceeded: "预算超限",
+  }[status] || status || "";
+}
+
+function relTime(ts) {
+  if (!ts) return "";
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return new Date(ts * 1000).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
+/* ------------------------------------------------------------------ Markdown 精简渲染 */
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function cssEscape(s) {
+  return String(s).replace(/["\\]/g, "\\$&");
+}
+
+function inline(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+function md(text) {
+  if (!text) return "";
+  const src = String(text).replace(/\r\n/g, "\n");
+  const out = [];
+  const lines = src.split("\n");
+  let i = 0;
+
+  const isTableRow = (l) => /^\s*\|.*\|\s*$/.test(l);
+  const isSep = (l) => /^\s*\|[\s:|-]+\|\s*$/.test(l);
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (/^\s*```/.test(line)) {
+      const lang = line.replace(/^\s*```/, "").trim();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      out.push(`<pre><code data-lang="${esc(lang)}">${esc(buf.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    if (isTableRow(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
+      const header = line.split("|").slice(1, -1).map((c) => c.trim());
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        rows.push(lines[i].split("|").slice(1, -1).map((c) => c.trim()));
+        i++;
+      }
+      out.push(
+        `<table><thead><tr>${header.map((h) => `<th>${inline(esc(h))}</th>`).join("")}</tr></thead><tbody>${rows
+          .map((r) => `<tr>${r.map((c) => `<td>${inline(esc(c))}</td>`).join("")}</tr>`)
+          .join("")}</tbody></table>`
+      );
+      continue;
+    }
+
+    if (/^#{1,6}\s/.test(line)) {
+      out.push(`<h4>${inline(esc(line.replace(/^#{1,6}\s/, "")))}</h4>`);
+      i++;
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i++;
+      }
+      out.push(`<ul>${items.map((it) => `<li>${inline(esc(it))}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i++;
+      }
+      out.push(`<ol>${items.map((it) => `<li>${inline(esc(it))}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    const buf = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^\s*```/.test(lines[i]) &&
+      !/^#{1,6}\s/.test(lines[i]) &&
+      !/^\s*[-*]\s+/.test(lines[i]) &&
+      !/^\s*\d+\.\s+/.test(lines[i]) &&
+      !isTableRow(lines[i])
+    ) {
+      buf.push(lines[i++]);
+    }
+    out.push(`<p>${inline(esc(buf.join(" ")))}</p>`);
+  }
+  return out.join("");
+}

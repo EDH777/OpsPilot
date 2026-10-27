@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpsPilot · 工业数据调查平台</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">OP</div>
+      <div class="brand-text">
+        <div class="brand-name">OpsPilot</div>
+        <div class="brand-sub">工业数据调查平台</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-view="dashboard"><span class="ico">◧</span>业务驾驶舱</button>
+      <button class="nav-item" data-view="workbench"><span class="ico">✦</span>AI 调查工作台</button>
+      <button class="nav-item" data-view="reports"><span class="ico">▤</span>报告中心</button>
+    </nav>
+
+    <div class="side-section">
+      <div class="side-title">最近调查</div>
+      <div id="session-list" class="session-list">
+        <div class="side-empty">暂无记录</div>
+      </div>
+    </div>
+
+    <div class="side-footer">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="model-status">连接中…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="page-head">
+        <h1 id="page-title">业务驾驶舱</h1>
+        <p id="page-sub">生产 · 能耗 · 设备数据统一视图</p>
+      </div>
+      <div class="top-actions">
+        <span class="pill" id="llm-pill">模型加载中</span>
+        <button class="btn primary" id="new-investigation">＋ 新调查</button>
+      </div>
+    </header>
+
+    <!-- 驾驶舱 -->
+    <section class="view active" id="view-dashboard">
+      <div class="kpi-grid" id="kpis"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>单位产品电耗趋势</h2>
+              <p class="card-sub">按车间 · kWh/件 · 数据缺失日不连线</p>
+            </div>
+            <div class="legend" id="trend-legend"></div>
+          </div>
+          <div class="chart" id="trend-chart"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>异常提示</h2>
+              <p class="card-sub">本期 vs 上期，变动超过 3% 的车间</p>
+            </div>
+          </div>
+          <div id="anomalies" class="anomalies"></div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>车间单位电耗对比</h2>
+              <p class="card-sub">上期基线 vs 本期实际</p>
+            </div>
+          </div>
+          <div class="chart" id="compare-chart"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>告警分布</h2>
+              <p class="card-sub">本期各车间设备告警次数</p>
+            </div>
+          </div>
+          <div id="alarms" class="alarm-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 调查工作台 -->
+    <section class="view" id="view-workbench">
+      <div class="wb-grid">
+        <div class="chat-panel">
+          <div class="chat-scroll" id="messages">
+            <div class="empty-state" id="chat-empty">
+              <div class="empty-badge">✦</div>
+              <h3>把问题交给 OpsPilot</h3>
+              <p>它会自己决定查哪些表、调哪些接口、跑什么代码，并把每一步执行过程摊开给你看。</p>
+              <div class="empty-examples">
+                <button class="example">最近一个月，三号车间的单位产品电耗明显增加，但产量没有明显变化。请调查原因。</button>
+                <button class="example">对比上个月各车间的产量完成率和单位产品电耗，指出最需要关注的车间。</button>
+                <button class="example">五号车间这个月不良率上升，和能耗变化有关系吗？</button>
+              </div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-box">
+              <textarea id="input" rows="2" placeholder="描述要调查的问题，例如：三号车间近30天单位产品电耗为什么升高？"></textarea>
+              <div class="composer-actions">
+                <label class="switch" title="不调用模型，用脚本化决策跑通完整链路">
+                  <input type="checkbox" id="mock-toggle" />
+                  <span>离线演示</span>
+                </label>
+                <button class="btn primary" id="send">开始调查</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="trace-panel">
+          <div class="trace-head">
+            <div>
+              <strong>执行轨迹</strong>
+              <div class="trace-meta" id="trace-meta">尚未开始</div>
+            </div>
+            <span class="live-dot" id="live-dot"></span>
+          </div>
+          <div class="trace-body" id="trace">
+            <div class="trace-empty">每一步模型决策、工具调用、错误与重试都会出现在这里。</div>
+          </div>
+          <div class="budget" id="budget"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- 报告中心 -->
+    <section class="view" id="view-reports">
+      <div class="reports-grid">
+        <div class="card report-list-card">
+          <div class="card-head"><h2>历史报告</h2></div>
+          <div id="report-list" class="report-list"><div class="side-empty">暂无报告</div></div>
+        </div>
+        <div class="report-detail" id="report-detail">
+          <div class="empty-state small"><p>从左侧选择一份报告查看。</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
