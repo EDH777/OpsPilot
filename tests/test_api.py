@@ -128,3 +128,44 @@ def test_chat_stream_with_mock_model(client):
 def test_chat_rejects_empty_message(client):
     r = client.post("/api/chat", json={"message": "x"})
     assert r.status_code == 422
+
+
+def _sse_events(text: str) -> list[dict]:
+    events = []
+    for line in text.splitlines():
+        if line.startswith("data: "):
+            try:
+                events.append(json.loads(line[6:]))
+            except json.JSONDecodeError:
+                continue
+    return events
+
+
+def _run_once(client, message: str, session_id: str | None = None) -> tuple[str, list[dict]]:
+    payload = {"message": message, "mock": True}
+    if session_id:
+        payload["session_id"] = session_id
+    with client.stream("POST", "/api/chat", json=payload) as resp:
+        events = _sse_events("".join(resp.iter_text()))
+    started = next(e for e in events if e["type"] == "run_started")
+    return started["data"]["session_id"], events
+
+
+def test_sessions_group_multiple_runs(client):
+    sid, _ = _run_once(client, "看一下二号车间这个月的用电情况")
+    sid2, _ = _run_once(client, "那看一下9月份的", sid)
+    assert sid2 == sid, "同一会话必须复用 session_id"
+
+    sessions = client.get("/api/sessions").json()["sessions"]
+    item = next(s for s in sessions if s["session_id"] == sid)
+    assert item["runs"] >= 2
+    assert item["title"] == "看一下二号车间这个月的用电情况"
+
+    runs = client.get(f"/api/sessions/{sid}").json()["runs"]
+    tasks = [r["task"] for r in runs]
+    assert tasks[-2:] == ["看一下二号车间这个月的用电情况", "那看一下9月份的"]
+    assert runs[-1]["session_id"] == sid
+
+
+def test_session_detail_404(client):
+    assert client.get("/api/sessions/sess_not_exists").status_code == 404

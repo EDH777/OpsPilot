@@ -51,7 +51,7 @@ async function init() {
     if (state.runId) showRunTrace(state.runId);
   });
   await checkHealth();
-  await Promise.all([loadRuns(), loadReports()]);
+  await Promise.all([loadSessions(), loadReports()]);
   if (state.staticMode) {
     // 截图/打印模式：不开长连接，只取一次快照
     await loadDashboard();
@@ -59,9 +59,11 @@ async function init() {
     connectDashboard();
   }
 
-  // 深链：/#/run/<run_id> 直接打开某次调查（便于分享与演示）
+  // 深链：/#/run/<run_id> 或 /#/session/<session_id>（便于分享与演示）
   const m = location.hash.match(/#\/run\/([A-Za-z0-9_]+)/);
+  const ms = location.hash.match(/#\/session\/([A-Za-z0-9_]+)/);
   if (m) openRun(m[1]);
+  else if (ms) openSession(ms[1]);
   else if (location.hash.startsWith("#/reports")) switchView("reports");
 }
 
@@ -482,7 +484,7 @@ function appendChip(bubble, callId, name) {
   chip.innerHTML = `<span class="dot"></span>${esc(name)}`;
   bubble.appendChild(chip);
   const counter = bubble.querySelector(".ac-count");
-  if (counter) counter.textContent = String(state.runToolNames.length);
+  if (counter) counter.textContent = String(bubble.querySelectorAll(".tool-chip").length);
   scrollChat();
 }
 
@@ -604,7 +606,7 @@ async function sendMessage(text) {
     $("#send").disabled = false;
     $("#live-dot").classList.remove("on");
     clearThinking();
-    loadRuns();
+    loadSessions();
   }
 }
 
@@ -731,7 +733,7 @@ function isImage(path) {
   return /\.(png|jpe?g|svg|webp)$/i.test(String(path));
 }
 
-function appendArtifacts(bubble, artifacts, caption) {
+function appendArtifacts(bubble, artifacts, caption, runId = state.runId) {
   const imgs = (artifacts || []).filter(isImage);
   if (!imgs.length || !bubble) return;
   let wrap = bubble.querySelector(".tool-artifacts");
@@ -747,7 +749,7 @@ function appendArtifacts(bubble, artifacts, caption) {
     wrap.appendChild(cap);
   }
   imgs.forEach((p) => {
-    const src = artifactUrl(p);
+    const src = artifactUrl(p, runId);
     if (Array.from(wrap.querySelectorAll("img")).some((i) => i.getAttribute("src") === src)) return;
     const img = document.createElement("img");
     img.src = src;
@@ -953,10 +955,10 @@ async function showRunTrace(runId) {
 
 /* ------------------------------------------------------------------ 报告 */
 
-function addReportCard(report) {
+function addReportCard(report, runId = state.runId) {
   const el = document.createElement("div");
   el.className = "report-card";
-  el.innerHTML = renderReportHtml(report, state.runId);
+  el.innerHTML = renderReportHtml(report, runId);
   $("#messages").appendChild(el);
   bindReportActions(el);
 }
@@ -1020,89 +1022,118 @@ function bindReportActions(root) {
 
 /* ------------------------------------------------------------------ 历史 */
 
-async function loadRuns() {
+async function loadSessions() {
   try {
-    const r = await fetch("/api/runs?limit=20");
+    const r = await fetch("/api/sessions?limit=20", { cache: "no-store" });
     const data = await r.json();
-    state.runs = data.runs || [];
+    const sessions = data.sessions || [];
     const el = $("#session-list");
-    if (!state.runs.length) {
+    if (!sessions.length) {
       el.innerHTML = `<div class="side-empty">暂无记录</div>`;
       return;
     }
-    el.innerHTML = state.runs
+    el.innerHTML = sessions
       .map(
-        (run) => `<button class="session-item" data-run="${run.run_id}">
-          <span class="si-title">${esc(run.title || run.task || "未命名调查")}</span>
-          <span class="st"><span>${statusText(run.status)}</span>·<span>${relTime(run.created_at)}</span></span>
+        (s) => `<button class="session-item ${s.session_id === state.sessionId ? "active" : ""}" data-session="${esc(s.session_id)}">
+          <span class="si-title">${esc(s.title || "未命名对话")}</span>
+          <span class="st"><span>${s.runs} 轮</span>·<span>${relTime(s.last_at)}</span></span>
         </button>`
       )
       .join("");
     $$(".session-item", el).forEach((btn) =>
-      btn.addEventListener("click", () => openRun(btn.dataset.run))
+      btn.addEventListener("click", () => openSession(btn.dataset.session))
     );
   } catch (e) {
     console.error(e);
   }
 }
 
-async function openRun(runId) {
+/* 一段对话 = 一个 session 下的多轮 run，按时间顺序还原 */
+
+async function openSession(sessionId, focusRunId = null) {
   switchView("workbench");
   resetWorkbench();
-  state.runId = runId;
+  state.sessionId = sessionId;
   try {
-    const [runResp, evResp] = await Promise.all([
-      fetch(`/api/runs/${runId}`).then((r) => r.json()),
-      fetch(`/api/runs/${runId}/events`).then((r) => r.json()),
-    ]);
-    const run = runResp.run;
-    state.sessionId = run.session_id;
-    $("#trace-meta").textContent = `run ${runId.slice(4, 12)} · ${statusText(run.status)}`;
-    const task = run.task || "";
-    if (task) addMessage("user", esc(task));
+    const resp = await fetch(`/api/sessions/${sessionId}`, { cache: "no-store" });
+    if (!resp.ok) throw new Error(await resp.text());
+    const runs = (await resp.json()).runs || [];
 
-    const toolResults = evResp.events
-      .filter((e) => e.type === "tool_finished")
-      .map((e) => ({ name: e.data.name, ok: Boolean(e.data.ok) }));
-    if (toolResults.length) {
-      const bubble = createActivityBubble(runId);
-      renderActivityChips(bubble, toolResults, runId);
-      state.activityBubble = bubble;
-      state.runToolResults = toolResults;
-      state.runToolNames = toolResults.map((r) => r.name);
-    }
-
-    const produced = evResp.events
-      .filter((e) => e.type === "tool_finished")
-      .flatMap((e) => e.data.artifacts || []);
-    if (produced.length) {
-      const wrap = addMessage("assistant", "");
-      appendArtifacts(wrap.querySelector(".bubble"), produced, "调查过程中生成的图表");
-    }
-
-    let sawReport = false;
-    for (const ev of evResp.events) {
-      if (ev.type === "tool_started") {
-        addTraceItem(ev.data);
-        state.traceItems.get(ev.data.call_id).classList.remove("running");
-      } else if (ev.type === "tool_finished") {
-        updateTraceItem(ev.data);
-      } else if (ev.type === "assistant_message") {
-        addMessage("assistant", md(ev.data.content || ""));
-      } else if (ev.type === "report") {
-        addReportCard(ev.data.report);
-        sawReport = true;
-      } else if (ev.type === "run_finished") {
-        renderBudget(ev.data.budget, ev.data.usage);
-        appendTraceNote(
-          `${statusText(ev.data.status)} · ${ev.data.budget.steps} 步 / ${ev.data.usage.total_tokens} tokens`,
-          ev.data.status === "completed" ? "ok" : "bad"
-        );
+    for (const run of runs) {
+      let events = [];
+      try {
+        const er = await fetch(`/api/runs/${run.run_id}/events`, { cache: "no-store" });
+        events = (await er.json()).events || [];
+      } catch {
+        events = [];
       }
+      appendRunToChat(run, events);
     }
-    if (run.report && !sawReport) addReportCard(run.report);
+
+    if (runs.length) {
+      const latest = runs[runs.length - 1].run_id;
+      state.runId = latest;
+      await showRunTrace(focusRunId || latest);
+    }
+    $("#chat-empty")?.remove();
+    scrollChat();
+    // 图片懒加载会改变高度，稍后再滚一次，确保停在最新一轮
+    setTimeout(scrollChat, 400);
   } catch (e) {
     console.error(e);
+    showToast("会话加载失败");
+  }
+  await loadSessions();
+}
+
+function appendRunToChat(run, events) {
+  if (run.task) addMessage("user", esc(run.task).replace(/\n/g, "<br>"));
+  let activity = null;
+  const toolResults = [];
+  let sawReport = false;
+
+  for (const ev of events) {
+    const d = ev.data || {};
+    switch (ev.type) {
+      case "assistant_message":
+        addMessage("assistant", md(d.content || ""));
+        break;
+      case "tool_started":
+        if (!activity) activity = createActivityBubble(run.run_id);
+        appendChip(activity, d.call_id, d.name);
+        break;
+      case "tool_finished":
+        toolResults.push({ name: d.name, ok: Boolean(d.ok) });
+        if (d.ok && d.artifacts && d.artifacts.length) {
+          const wrap = addMessage("assistant", "");
+          appendArtifacts(wrap.querySelector(".bubble"), d.artifacts, "本次生成的图表", run.run_id);
+        }
+        break;
+      case "report":
+        addReportCard(d.report, run.run_id);
+        sawReport = true;
+        break;
+      default:
+        break;
+    }
+  }
+  if (activity) renderActivityChips(activity, toolResults, run.run_id);
+  if (run.report && !sawReport) addReportCard(run.report, run.run_id);
+}
+
+async function openRun(runId) {
+  try {
+    const resp = await fetch(`/api/runs/${runId}`, { cache: "no-store" });
+    if (!resp.ok) throw new Error(await resp.text());
+    const { run } = await resp.json();
+    if (run?.session_id) {
+      await openSession(run.session_id, runId);
+    } else {
+      showToast("该运行没有会话信息");
+    }
+  } catch (e) {
+    console.error(e);
+    showToast("运行加载失败");
   }
 }
 

@@ -133,6 +133,17 @@ async def main() -> None:
             )
             print("第二轮:", second)
 
+            sess = json.loads(
+                await js(
+                    ws,
+                    counter,
+                    "JSON.stringify({active: document.querySelectorAll('.session-item.active').length,"
+                    " meta: (document.querySelector('.session-item.active .st') || {}).textContent || '',"
+                    " items: document.querySelectorAll('.session-item').length})",
+                )
+            )
+            print("侧栏会话:", sess)
+
             # 点第一个（历史）气泡的轨迹按钮
             await js(ws, counter, "document.querySelectorAll('.activity-footer .link-btn')[0].click()")
             await asyncio.sleep(1.5)
@@ -147,6 +158,20 @@ async def main() -> None:
             )
             print("点击历史气泡后:", hist)
 
+            # 点侧栏会话，验证整段对话能恢复
+            await js(ws, counter, "document.querySelector('.session-item.active').click()")
+            await asyncio.sleep(2.5)
+            restored = json.loads(
+                await js(
+                    ws,
+                    counter,
+                    "JSON.stringify({users: document.querySelectorAll('.msg.user').length,"
+                    " bubbles: document.querySelectorAll('.activity-bubble').length,"
+                    " lastUser: ([...document.querySelectorAll('.msg.user .bubble')].pop() || {}).textContent || ''})",
+                )
+            )
+            print("重开会话:", restored)
+
             shot = await cdp(ws, counter, "Page.captureScreenshot", {"format": "png"})
             data = shot["result"]["data"]
             OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +184,10 @@ async def main() -> None:
             assert hist["backHidden"] is False, "历史模式下应显示返回按钮"
             assert "历史运行" in hist["meta"], "轨迹未切到历史运行"
             assert hist["active"] == 0, "历史气泡未高亮"
+            assert sess["active"] == 1, "侧栏应只有当前会话处于选中态"
+            assert "2 轮" in sess["meta"], f"侧栏应显示会话轮数，实际 {sess['meta']!r}"
+            assert restored["users"] == 2 and restored["bubbles"] == 2, "重开会话未恢复两轮对话"
+            assert "9月份" in restored["lastUser"], "恢复的对话最后一条不是第二轮问题"
             print("E2E 通过")
     finally:
         proc.terminate()

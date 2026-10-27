@@ -175,9 +175,9 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 看板实时推送：`/api/dashboard/stream`，指纹（db+wal mtime/size）变化才重算，前端增量更新 + 版本号
 - [x] 任务分级：`core/routing.py` 区分简单查询/异常调查，分别给 6 步与 24 步预算、不同提示词
 - [x] `inspect_schema` 返回枚举列值域；Python 沙箱 `-X utf8` 修复中文乱码；产物图直接渲染在对话与报告里
-- [x] 多轮对话：每次运行一个聚合工具气泡；点击气泡可把右侧轨迹切回那一轮（支持返回最新）
-- [x] `scripts/e2e_cdp.py`：用 CDP 驱动无头 Edge 做多轮对话 UI 回归
-- [x] 63 个测试全绿
+- [x] 多轮对话：左侧按 session 聚合（`/api/sessions`），点开恢复整段对话；每 run 一个聚合工具气泡
+- [x] 点击气泡可把右侧轨迹切回那一轮（支持返回最新）；`scripts/e2e_cdp.py` 覆盖多轮与恢复
+- [x] 65 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）

@@ -149,6 +149,10 @@ sequenceDiagram
 ## 6. 状态与恢复
 每一步结束写一次检查点：`messages + step + usage + status`。
 
+会话维度：`runs.session_id` 把同一段对话里的多轮 run 归在一起。侧栏按 session 聚合展示，
+点开时按 `created_at` 顺序取出该 session 的全部 run 并重放各自的事件流；
+新增提问沿用当前 `session_id`，因此不会每问一句就多出一个"对话"。
+
 - 崩溃/重启后 `POST /api/runs/{id}/resume` 从最后一条消息继续；
 - 已完成/已取消的 run 拒绝续跑；
 - `resume` 时预算计数从持久化状态恢复，不会"续跑即刷新预算"。

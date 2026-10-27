@@ -194,6 +194,19 @@ async def list_runs(session_id: str | None = None, limit: int = Query(default=30
     return {"runs": rows}
 
 
+@app.get("/api/sessions")
+async def list_sessions(limit: int = Query(default=20, ge=1, le=100)):
+    return {"sessions": app.state.store.list_sessions(limit=limit)}
+
+
+@app.get("/api/sessions/{session_id}")
+async def session_detail(session_id: str, limit: int = Query(default=200, ge=1, le=500)):
+    runs = app.state.store.session_runs(session_id, limit=limit)
+    if not runs:
+        raise HTTPException(404, "会话不存在")
+    return {"session_id": session_id, "runs": runs}
+
+
 @app.get("/api/reports")
 async def list_reports(limit: int = Query(default=50, ge=1, le=200)):
     return {"reports": app.state.store.list_reports(limit=limit)}

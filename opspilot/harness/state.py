@@ -117,6 +117,40 @@ class StateStore:
             ).fetchall()
         return [self._decode(dict(r)) for r in rows]
 
+    def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        """会话维度：一个 session 下可能有多轮 run，侧栏应按会话展示。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT s.session_id,
+                       (SELECT r.task FROM runs r WHERE r.session_id = s.session_id
+                        ORDER BY r.created_at ASC LIMIT 1) AS title,
+                       COUNT(*) AS runs,
+                       MIN(s.created_at) AS started_at,
+                       MAX(s.created_at) AS last_at,
+                       (SELECT r.status FROM runs r WHERE r.session_id = s.session_id
+                        ORDER BY r.created_at DESC LIMIT 1) AS last_status,
+                       (SELECT r.run_id FROM runs r WHERE r.session_id = s.session_id
+                        ORDER BY r.created_at DESC LIMIT 1) AS last_run_id
+                FROM runs s
+                WHERE s.session_id IS NOT NULL
+                GROUP BY s.session_id
+                ORDER BY last_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def session_runs(self, session_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT run_id, session_id, task, status, step, usage, answer, report, created_at "
+                "FROM runs WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        return [self._decode(dict(r)) for r in rows]
+
     def sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
