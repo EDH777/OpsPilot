@@ -170,7 +170,8 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 7 个业务工具 + 模拟 ERP（严格参数、结构化 400）
 - [x] 模拟工厂数据：WS-03 空压机空转导致 +13.2% 单位电耗；WS-05 干扰项；WS-02 数据缺口
 - [x] FastAPI + SSE + Web 工作台（驾驶舱 / 调查 / 报告中心 / Trace 回放 / Markdown 导出）
-- [x] 47 个测试全绿
+- [x] 看板实时推送：`/api/dashboard/stream`，指纹（db+wal mtime/size）变化才重算，前端增量更新 + 版本号
+- [x] 49 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）

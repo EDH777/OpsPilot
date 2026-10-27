@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from opspilot.harness.tracing import Tracer
 from opspilot.llm import build_llm
 from opspilot.llm.base import LLMError
 from opspilot.services.analytics import dashboard_overview
+from opspilot.services.data_version import data_signature
 from opspilot.services.reporting import report_to_markdown
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -101,11 +103,87 @@ async def tools() -> dict[str, Any]:
     }
 
 
+def _dashboard_payload(days: int, *, reason: str = "snapshot") -> dict[str, Any]:
+    sig = data_signature(settings.db_path)
+    # DuckDB 是单写多读：外部写入时可能短暂持有排他锁，读侧重试几次即可
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            data = dashboard_overview(settings.db_path, days=days)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            time.sleep(0.25 * (attempt + 1))
+    else:
+        raise last  # type: ignore[misc]
+    return {
+        **data,
+        "data_version": sig.version,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "reason": reason,
+    }
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+async def dashboard_event_stream(request: Request, days: int = 30, poll_s: float = 2.0):
+    """数据变更推送：轮询文件指纹，变化时重算并推一份新的看板快照。
+
+    指纹相同则不重算、不推送；每 15 秒发一次注释行保活。
+    """
+    last_version: str | None = None
+    last_sent = 0.0
+    while True:
+        if await request.is_disconnected():
+            break
+        try:
+            sig = data_signature(settings.db_path)
+            if sig.version != last_version:
+                # 防抖：写入可能还在进行，400ms 后指纹仍变就下一轮再算
+                await asyncio.sleep(0.4)
+                if data_signature(settings.db_path).version != sig.version:
+                    await asyncio.sleep(poll_s)
+                    continue
+                payload = await asyncio.to_thread(
+                    _dashboard_payload, days, reason="changed" if last_version else "initial"
+                )
+                yield _sse("dashboard", payload)
+                last_version = payload["data_version"]
+                last_sent = time.monotonic()
+            elif time.monotonic() - last_sent >= 15:
+                yield ": ping\n\n"
+                last_sent = time.monotonic()
+        except FileNotFoundError:
+            yield _sse("stream_error", {"message": "数据库文件不存在，请先运行 python -m opspilot.data.seed"})
+            last_version = None
+        except Exception as exc:  # noqa: BLE001 - 单次失败不应中断推送
+            yield _sse("stream_error", {"message": f"{type(exc).__name__}: {exc}"[:300]})
+            last_version = None
+        await asyncio.sleep(poll_s)
+
+
 @app.get("/api/dashboard")
 async def dashboard(days: int = Query(default=30, ge=7, le=92)) -> dict[str, Any]:
     if not settings.db_path.exists():
         raise HTTPException(503, "数据库尚未生成，请先运行 python -m opspilot.data.seed")
-    return dashboard_overview(settings.db_path, days=days)
+    return await asyncio.to_thread(_dashboard_payload, days)
+
+
+@app.get("/api/dashboard/stream")
+async def dashboard_stream(request: Request, days: int = Query(default=30, ge=7, le=92)):
+    if not settings.db_path.exists():
+        raise HTTPException(503, "数据库尚未生成，请先运行 python -m opspilot.data.seed")
+    return StreamingResponse(
+        dashboard_event_stream(request, days),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # --------------------------------------------------------------------- 运行

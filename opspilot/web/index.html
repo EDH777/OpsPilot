@@ -43,6 +43,11 @@
         <p id="page-sub">生产 · 能耗 · 设备数据统一视图</p>
       </div>
       <div class="top-actions">
+        <div class="sync" id="sync" title="数据变更由服务端通过 SSE 实时推送">
+          <span class="live-dot" id="sync-dot"></span>
+          <span id="sync-text">连接中…</span>
+          <button class="btn ghost icon" id="refresh-dashboard" title="立即刷新">↻</button>
+        </div>
         <span class="pill" id="llm-pill">模型加载中</span>
         <button class="btn primary" id="new-investigation">＋ 新调查</button>
       </div>
@@ -160,5 +165,6 @@
 </div>
 
 <script src="/static/app.js"></script>
+<div class="toast" id="toast"></div>
 </body>
 </html>

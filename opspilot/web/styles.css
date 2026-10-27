@@ -113,6 +113,40 @@ button { font: inherit; cursor: pointer; }
   border: 1px solid var(--line); padding: 5px 10px; border-radius: 999px;
 }
 
+/* 实时同步状态 */
+.sync {
+  display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted);
+  padding-right: 12px; border-right: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.sync #sync-text { max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync .live-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(15, 157, 110, .14); animation: pulseDot 2.4s infinite; }
+.sync .live-dot.bad { background: var(--bad); }
+.btn.icon { padding: 4px 8px; font-size: 13px; line-height: 1; color: var(--muted); }
+@keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* 数值变更闪烁 */
+.kpi.flash { animation: kpiFlash 1.3s ease-out; }
+@keyframes kpiFlash {
+  0% { background: #fff3e6; border-color: #fdba74; transform: translateY(-1px); }
+  100% { background: #fff; border-color: var(--line); transform: none; }
+}
+.kpi.highlight.flash { animation-name: kpiFlashHighlight; }
+@keyframes kpiFlashHighlight {
+  0% { background: #ffedd5; border-color: #fdba74; transform: translateY(-1px); }
+  100% { background: linear-gradient(180deg, #fffbf7, #fff); border-color: #fed7aa; }
+}
+
+/* 轻提示 */
+.toast {
+  position: fixed; top: 18px; left: 50%; transform: translate(-50%, -12px);
+  background: var(--navy); color: #f1f5f9; font-size: 12.5px;
+  padding: 9px 16px; border-radius: 9px; opacity: 0; pointer-events: none;
+  transition: opacity .2s, transform .2s; z-index: 50;
+  box-shadow: 0 12px 30px -12px rgba(16, 24, 40, .5);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
 .btn {
   border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
   color: var(--ink-2); padding: 8px 14px; font-size: 13px; font-weight: 550;

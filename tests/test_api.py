@@ -1,13 +1,18 @@
-"""API 集成测试：健康检查、驾驶舱、SSE 调查、报告导出。"""
+"""API 集成测试：健康检查、驾驶舱、SSE 调查与看板推送、报告导出。"""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+import time
 
+import duckdb
 import pytest
 from fastapi.testclient import TestClient
 
 from opspilot.api.app import app
+from opspilot.services.data_version import data_signature
 
 
 @pytest.fixture(scope="module")
@@ -38,6 +43,53 @@ def test_dashboard(client):
     assert body["unit_energy_trend"]["dates"]
     assert body["unit_energy_trend"]["series"]
     assert any(a["workshop_id"] == "WS-03" for a in body["anomalies"])
+    assert body["data_version"].startswith("v")
+    assert body["generated_at"]
+
+
+def test_data_signature_tracks_writes(tmp_path):
+    db = tmp_path / "sig.duckdb"
+    db.write_bytes(b"a")
+    first = data_signature(db)
+    time.sleep(0.01)
+    db.write_bytes(b"bb")
+    second = data_signature(db)
+    assert first.version != second.version
+    assert second.size == 2
+
+
+async def test_dashboard_stream_pushes_on_db_change(tmp_path, monkeypatch):
+    import opspilot.api.app as appmod
+    from opspilot.config import get_settings
+
+    src = get_settings().db_path
+    db = tmp_path / "stream.duckdb"
+    shutil.copy(src, db)
+    patched = appmod.settings.model_copy(update={"db_path": db})
+    monkeypatch.setattr(appmod, "settings", patched)
+
+    class FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    gen = appmod.dashboard_event_stream(FakeRequest(), days=30, poll_s=0.2)
+    try:
+        first = await asyncio.wait_for(gen.__anext__(), timeout=8)
+        first_payload = json.loads(first.split("data: ", 1)[1])
+        assert first_payload["reason"] == "initial"
+        version1 = first_payload["data_version"]
+
+        con = duckdb.connect(str(db))
+        con.execute("UPDATE workshop SET workshop_name = '一号车间(改)' WHERE workshop_id = 'WS-01'")
+        con.close()
+
+        second = await asyncio.wait_for(gen.__anext__(), timeout=12)
+        payload = json.loads(second.split("data: ", 1)[1])
+        assert payload["reason"] == "changed"
+        assert payload["data_version"] != version1
+        assert "一号车间(改)" in payload["workshop_compare"]["workshops"]
+    finally:
+        await gen.aclose()
 
 
 def test_index_page(client):

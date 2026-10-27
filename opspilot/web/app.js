@@ -14,9 +14,16 @@ const state = {
   sessionId: null,
   runId: null,
   streaming: false,
+  staticMode: new URLSearchParams(location.search).get("static") === "1",
   runs: [],
   reports: [],
   dashboard: null,
+  kpis: null,
+  trendSig: "",
+  compareSig: "",
+  anomalySig: "",
+  alarmSig: "",
+  dashboardStream: null,
   budget: null,
   traceItems: new Map(),
   stepBubbles: new Map(),
@@ -33,13 +40,88 @@ async function init() {
     switchView("workbench");
     $("#input").focus();
   });
+  $("#refresh-dashboard").addEventListener("click", async () => {
+    await loadDashboard();
+    showToast("已刷新至最新数据");
+  });
   await checkHealth();
-  await Promise.all([loadDashboard(), loadRuns(), loadReports()]);
+  await Promise.all([loadRuns(), loadReports()]);
+  if (state.staticMode) {
+    // 截图/打印模式：不开长连接，只取一次快照
+    await loadDashboard();
+  } else {
+    connectDashboard();
+  }
 
   // 深链：/#/run/<run_id> 直接打开某次调查（便于分享与演示）
   const m = location.hash.match(/#\/run\/([A-Za-z0-9_]+)/);
   if (m) openRun(m[1]);
   else if (location.hash.startsWith("#/reports")) switchView("reports");
+}
+
+/* ------------------------------------------------------------------ 实时看板（SSE） */
+
+function connectDashboard() {
+  if (!window.EventSource) {
+    loadDashboard();
+    return;
+  }
+  const es = new EventSource("/api/dashboard/stream?days=30");
+  state.dashboardStream = es;
+
+  es.addEventListener("dashboard", (e) => {
+    try {
+      applyDashboard(JSON.parse(e.data));
+    } catch (err) {
+      console.error("dashboard event", err);
+    }
+  });
+
+  es.addEventListener("stream_error", (e) => {
+    let msg = "看板推送异常";
+    try {
+      msg = JSON.parse(e.data).message || msg;
+    } catch {
+      /* ignore */
+    }
+    showToast(msg);
+    setSync("数据源异常，重试中…", false);
+  });
+
+  // 连接断开/重连（EventSource 内置事件）
+  es.addEventListener("error", () => setSync("连接中断，浏览器自动重连中…", false));
+  es.onopen = () => setSync("已连接，等待数据…", true);
+}
+
+function applyDashboard(data) {
+  state.dashboard = data;
+  renderKpis(data.kpis);
+  renderTrend(data.unit_energy_trend);
+  renderCompare(data.workshop_compare);
+  renderAnomalies(data.anomalies, data.data_quality);
+  renderAlarms(data.alarms_by_workshop);
+  $("#page-sub").textContent = `统计区间 ${data.period.start} ~ ${data.period.end}`;
+  const time = data.generated_at ? new Date(data.generated_at).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+  const label = state.staticMode ? "快照" : "实时";
+  setSync(`${label} · ${time} · ${data.data_version || ""}`, true);
+  if (data.reason === "changed") showToast("检测到数据变更，看板已更新");
+}
+
+function setSync(text, ok) {
+  const dot = $("#sync-dot");
+  if (dot) dot.className = `live-dot ${ok ? "ok" : "bad"}`;
+  const el = $("#sync-text");
+  if (el) el.textContent = text;
+}
+
+let toastTimer = null;
+function showToast(message) {
+  const el = $("#toast");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
 /* ------------------------------------------------------------------ 导航 */
@@ -92,42 +174,50 @@ async function checkHealth() {
 
 async function loadDashboard() {
   try {
-    const r = await fetch("/api/dashboard?days=30");
+    const r = await fetch("/api/dashboard?days=30", { cache: "no-store" });
     if (!r.ok) throw new Error(await r.text());
-    state.dashboard = await r.json();
-    renderKpis(state.dashboard.kpis);
-    renderTrend(state.dashboard.unit_energy_trend);
-    renderCompare(state.dashboard.workshop_compare);
-    renderAnomalies(state.dashboard.anomalies, state.dashboard.data_quality);
-    renderAlarms(state.dashboard.alarms_by_workshop);
-    $("#page-sub").textContent = `统计区间 ${state.dashboard.period.start} ~ ${state.dashboard.period.end}`;
+    applyDashboard(await r.json());
   } catch (e) {
     console.error(e);
     $("#kpis").innerHTML = `<div class="anomaly-list-empty">驾驶舱数据加载失败：${esc(String(e.message || e))}</div>`;
   }
 }
 
+function deltaHtml(k) {
+  if (k.delta_pct === null || k.delta_pct === undefined) return "<span>本期</span>";
+  const up = k.delta_pct >= 0;
+  const good = k.inverse ? !up : up;
+  return `<span class="${good ? "delta-good" : "delta-bad"}">${up ? "▲" : "▼"} ${Math.abs(k.delta_pct).toFixed(1)}%</span><span>较上期</span>`;
+}
+
+function kpiCardHtml(k) {
+  return `<div class="kpi ${k.highlight ? "highlight" : ""}" data-kpi="${esc(k.key)}">
+    <div class="kpi-label">${esc(k.label)}</div>
+    <div class="kpi-value"><span class="kv"></span><span class="kpi-unit"></span></div>
+    <div class="kpi-delta" data-role="delta"></div>
+  </div>`;
+}
+
 function renderKpis(kpis) {
   const el = $("#kpis");
-  el.innerHTML = kpis
-    .map((k) => {
-      let deltaHtml = "";
-      if (k.delta_pct !== null && k.delta_pct !== undefined) {
-        const up = k.delta_pct >= 0;
-        const good = k.inverse ? !up : up;
-        const cls = good ? "delta-good" : "delta-bad";
-        deltaHtml = `<div class="kpi-delta"><span class="${cls}">${up ? "▲" : "▼"} ${Math.abs(k.delta_pct).toFixed(1)}%</span><span>较上期</span></div>`;
-      } else {
-        deltaHtml = `<div class="kpi-delta"><span>本期</span></div>`;
-      }
-      const value = Number(k.value).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
-      return `<div class="kpi ${k.highlight ? "highlight" : ""}">
-        <div class="kpi-label">${esc(k.label)}</div>
-        <div class="kpi-value">${value}<span class="kpi-unit">${esc(k.unit || "")}</span></div>
-        ${deltaHtml}
-      </div>`;
-    })
-    .join("");
+  const prev = new Map((state.kpis || []).map((k) => [k.key, k]));
+  if (!el.querySelector("[data-kpi]") || el.children.length !== kpis.length) {
+    el.innerHTML = kpis.map(kpiCardHtml).join("");
+  }
+  kpis.forEach((k) => {
+    const card = el.querySelector(`[data-kpi="${k.key}"]`);
+    if (!card) return;
+    $(".kv", card).textContent = Number(k.value).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    $(".kpi-unit", card).textContent = k.unit || "";
+    $('[data-role="delta"]', card).innerHTML = deltaHtml(k);
+    const before = prev.get(k.key);
+    if (before && (before.value !== k.value || before.delta_pct !== k.delta_pct)) {
+      card.classList.remove("flash");
+      void card.offsetWidth; // 重启动画
+      card.classList.add("flash");
+    }
+  });
+  state.kpis = kpis;
 }
 
 function renderTrend(trend) {
@@ -135,6 +225,9 @@ function renderTrend(trend) {
     $("#trend-chart").innerHTML = `<div class="anomaly-list-empty">暂无数据</div>`;
     return;
   }
+  const sig = JSON.stringify(trend);
+  if (sig === state.trendSig) return;
+  state.trendSig = sig;
   $("#trend-legend").innerHTML = trend.series
     .map((s, i) => `<span><i style="background:${PALETTE[i % PALETTE.length]}"></i>${esc(s.name)}</span>`)
     .join("");
@@ -146,11 +239,17 @@ function renderCompare(cmp) {
     $("#compare-chart").innerHTML = `<div class="anomaly-list-empty">暂无数据</div>`;
     return;
   }
+  const sig = JSON.stringify(cmp);
+  if (sig === state.compareSig) return;
+  state.compareSig = sig;
   $("#compare-chart").innerHTML = groupedBarChart(cmp.workshops, cmp.previous, cmp.current, { height: 240 });
 }
 
 function renderAnomalies(anomalies, dataQuality = []) {
   const el = $("#anomalies");
+  const sig = JSON.stringify([anomalies, dataQuality]);
+  if (sig === state.anomalySig) return;
+  state.anomalySig = sig;
   const dq = (dataQuality || [])
     .map(
       (d) => `<div class="anomaly warn">
@@ -197,6 +296,9 @@ function renderAlarms(rows) {
     el.innerHTML = `<div class="anomaly-list-empty">本期无告警。</div>`;
     return;
   }
+  const sig = JSON.stringify(rows);
+  if (sig === state.alarmSig) return;
+  state.alarmSig = sig;
   const max = Math.max(...rows.map((r) => r.count), 1);
   el.innerHTML = rows
     .map(

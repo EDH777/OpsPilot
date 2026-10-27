@@ -104,15 +104,43 @@ flowchart LR
 - **四道硬闸**：最大步数、最大工具调用数、最大 token、最大墙钟时间；任一超限都以结构化状态终止。
 - **预算感知**：消耗达 60% 时注入一条系统提醒，要求尽快提交报告——解决"模型无限深挖"的现实问题。
 
-## 5. 状态与恢复
+## 5. 看板数据变更推送（SSE）
 
+看板不是"定时全量刷新"，而是"数据变了才推一份新快照"：
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器
+    participant A as FastAPI
+    participant D as DuckDB
+
+    B->>A: GET /api/dashboard/stream (SSE)
+    A->>D: data_signature(db + wal)
+    A->>D: dashboard_overview() 聚合
+    A-->>B: event dashboard (reason=initial)
+    loop 每 2 秒
+        A->>D: 只读文件指纹（不查表）
+    end
+    Note over D: 外部写入（脚本 / 其他系统）
+    A->>A: 指纹变化 → 防抖 400ms → 重新聚合
+    A-->>B: event dashboard (reason=changed, 新版本号)
+    B->>B: 只更新变化的 KPI / 图表，变化项闪烁
+```
+
+- **版本号**：`v` + `sha1(主文件 mtime/size + WAL mtime/size)[:8]`，能捕捉尚未 checkpoint 的写入。
+- **代价控制**：指纹相同则不重算、不推送；每 15 秒发一次 SSE 注释行保活；断线由 EventSource 自动重连。
+- **并发**：DuckDB 单写多读，读侧遇到文件锁会重试 4 次；写侧建议用独立进程并自行处理锁冲突。
+- **静态模式**：`/?static=1` 关闭长连接、只取一次快照——用于截图、打印和无 SSE 环境。
+- **不重造历史**：历史报告是当时落库的 JSON 快照，数据更新不会改写已生成的报告。
+
+## 6. 状态与恢复
 每一步结束写一次检查点：`messages + step + usage + status`。
 
 - 崩溃/重启后 `POST /api/runs/{id}/resume` 从最后一条消息继续；
 - 已完成/已取消的 run 拒绝续跑；
 - `resume` 时预算计数从持久化状态恢复，不会"续跑即刷新预算"。
 
-## 6. 安全边界（诚实版）
+## 7. 安全边界（诚实版）
 
 | 措施 | 现状 |
 |---|---|
@@ -123,7 +151,7 @@ flowchart LR
 | 凭证 | 只在 `.env` / 环境变量，`.gitignore` 排除；前端不接触 |
 | 认证/多租户 | **未实现**，当前定位是单机演示 |
 
-## 7. 为什么不全用现成框架
+## 8. 为什么不全用现成框架
 
 借鉴说明里推荐 DB-GPT / Deep Agents，理由是"别重复造轮子"。本项目的取舍是：
 
@@ -133,7 +161,7 @@ flowchart LR
 - **对照**：`chAgent` 环境里同时装了 `langgraph`，后续可用同一任务集跑"框架版"做对照，
   验证自研 Harness 在异常恢复与成本上的差异。
 
-## 8. 后续演进
+## 9. 后续演进
 
 1. **人工审批**：高风险工具（写操作、外部通知）挂起等用户确认，`PAUSED` 状态已预留。
 2. **MCP / OpenAPI 自动注册**：从接口文档自动生成 `ToolSpec`，替代手写参数模型。
