@@ -76,8 +76,10 @@ API 参数口径不统一、模型给错参数类型（后端要 `LocalDate[]`�
 | qwen 推理模型的 reasoning tokens 计入 completion | `max_tokens` 至少 4096，项目用 8192；否则长 SQL/代码被截断成非法 JSON |
 | 被截断的 tool_call 历史回传会让网关 400 | 回填前用 `sanitize_tool_calls()` 替换成合法占位 JSON |
 | qwen 偶尔把 `</think>` 漏进 content | `openai_compat._parse` 里正则清理 |
-| 模型会一直深挖不收敛 | 预算 60% 时注入 `harness_budget` 提醒；prompt 要求 2~3 条证据即收尾 |
+| 模型会一直深挖不收敛 | 预算 60% 时注入 `harness_budget` 提醒；prompt 要求 2~3 条证据即收尾；简单任务走 6 步预算 |
 | 驾驶舱曾被缺失数据误导成 -10% 异常 | 指标按"日期配对完整"计算，覆盖率 <95% 标为数据质量缺口 |
+| 沙箱 `-I` 会忽略 `PYTHONIOENCODING`，中文 stdout 乱码 | 启动参数改为 `python -X utf8 -I main.py` |
+| 沙箱产物路径少了 `py_xxx/` 前缀，前端 404 | `run()` 统一把 artifacts 转成相对 `artifacts_dir` 的路径 |
 
 ---
 
@@ -171,7 +173,9 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 模拟工厂数据：WS-03 空压机空转导致 +13.2% 单位电耗；WS-05 干扰项；WS-02 数据缺口
 - [x] FastAPI + SSE + Web 工作台（驾驶舱 / 调查 / 报告中心 / Trace 回放 / Markdown 导出）
 - [x] 看板实时推送：`/api/dashboard/stream`，指纹（db+wal mtime/size）变化才重算，前端增量更新 + 版本号
-- [x] 49 个测试全绿
+- [x] 任务分级：`core/routing.py` 区分简单查询/异常调查，分别给 6 步与 24 步预算、不同提示词
+- [x] `inspect_schema` 返回枚举列值域；Python 沙箱 `-X utf8` 修复中文乱码；产物图直接渲染在对话与报告里
+- [x] 63 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）

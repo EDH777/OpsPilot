@@ -40,6 +40,12 @@ async def python_analysis(args: PythonAnalysisArgs, ctx: ToolContext) -> dict[st
     result = await sandbox.run(args.code, artifacts_dir=ctx.artifacts_dir)
     data = result.to_dict()
     data["purpose"] = args.purpose
+    if result.artifacts:
+        # 登记产物，便于 submit_report 自动附图、前端直接渲染
+        produced: list[str] = ctx.shared.setdefault("artifacts", [])
+        for path in result.artifacts:
+            if path not in produced:
+                produced.append(path)
     if not result.ok:
         data["hint"] = "请阅读 stderr 中的 traceback，修正代码后重试；不要重复提交同样的代码。"
     return data

@@ -26,6 +26,15 @@ async def test_inspect_schema_lists_tables(ctx):
     assert any(m["key"] == "unit_energy" for m in result["metric_glossary"])
 
 
+async def test_inspect_schema_includes_enum_values(ctx):
+    result = await schema.inspect_schema(schema.InspectSchemaArgs(), ctx)
+    energy = next(t for t in result["tables"] if t["name"] == "energy_record")
+    col = next(c for c in energy["columns"] if c["name"] == "energy_type")
+    assert "values" in col
+    assert "electricity" in col["values"]
+    assert "natural_gas" in col["values"]
+
+
 async def test_inspect_schema_single_table(ctx):
     result = await schema.inspect_schema(schema.InspectSchemaArgs(table="energy_record"), ctx)
     assert result["ok"] is True
@@ -88,7 +97,7 @@ plt.savefig("demo.png", dpi=80)
     result = await python_tool.python_analysis(python_tool.PythonAnalysisArgs(code=code), ctx)
     assert result["ok"] is True
     assert "sum: 3" in result["stdout"]
-    assert "demo.png" in result["artifacts"]
+    assert any(p.endswith("demo.png") for p in result["artifacts"])
 
 
 async def test_python_sandbox_reports_error_as_observation(ctx):
@@ -97,6 +106,16 @@ async def test_python_sandbox_reports_error_as_observation(ctx):
     )
     assert result["ok"] is False
     assert "boom" in (result["stderr"] + (result["error"] or ""))
+
+
+async def test_python_sandbox_stdout_is_utf8(ctx):
+    # 回归：-I 会忽略 PYTHONIOENCODING，曾导致中文输出乱码
+    result = await python_tool.python_analysis(
+        python_tool.PythonAnalysisArgs(code="print('单位电耗 1.323 kWh/件')"), ctx
+    )
+    assert result["ok"] is True
+    assert "单位电耗" in result["stdout"]
+    assert "1.323" in result["stdout"]
 
 
 async def test_submit_report_stores_payload(ctx):
@@ -125,6 +144,20 @@ async def test_submit_report_rejects_short_summary(ctx):
             ctx,
         )
     assert "summary" in str(exc.value)
+
+
+async def test_submit_report_fills_charts_from_artifacts(ctx):
+    ctx.shared["artifacts"] = ["py_1/trend.png", "py_1/data.csv"]
+    await report.submit_report(
+        report.SubmitReportArgs(
+            title="图表兜底",
+            summary="这是一个足够长的摘要，包含数字 11.38% 与时间范围 2026-10。",
+            findings=[report.Finding(statement="s", evidence="e", confidence="证据支持")],
+        ),
+        ctx,
+    )
+    # 只取图片，不含 csv
+    assert ctx.shared["report"]["charts"] == ["py_1/trend.png"]
 
 
 def test_sql_validator_classifies_permission_error():

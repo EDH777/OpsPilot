@@ -239,6 +239,29 @@ async def test_executor_classifies_not_found(executor, ctx):
     assert result.error.kind is ErrorKind.NOT_FOUND
 
 
+async def test_executor_emits_artifacts_in_event(tmp_path: Path):
+    reg = ToolRegistry()
+
+    class Args(BaseModel):
+        code: str
+
+    async def produce(args: Args, context):
+        return {"ok": True, "artifacts": ["py_1/trend.png"]}
+
+    reg.register(ToolSpec(name="produce", description="d", args_model=Args, handler=produce))
+    events: list[tuple[str, dict]] = []
+    context = ToolContext(
+        run_id="run_art",
+        settings=type("S", (), {"tool_timeout_s": 5})(),
+        artifacts_dir=tmp_path,
+        emit=lambda name, payload: events.append((name, payload)),
+    )
+    result = await ToolExecutor(reg).execute(ToolCall(name="produce", arguments='{"code":"x"}'), context)
+    assert result.ok
+    finished = next(p for n, p in events if n == "tool_finished")
+    assert finished["artifacts"] == ["py_1/trend.png"]
+
+
 # ---------------------------------------------------------------- 状态与追踪
 
 def test_state_store_roundtrip(tmp_path: Path):

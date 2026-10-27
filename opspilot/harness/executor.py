@@ -123,6 +123,8 @@ class ToolExecutor:
             repairs=result.repairs,
             error=result.error.to_dict() if result.error else None,
             preview=result.content_for_llm(600),
+            # 产物清单单独带出来，前端据此渲染图表（不发完整结果，避免事件流过大）
+            artifacts=result.data.get("artifacts") if isinstance(result.data, dict) else None,
         )
         return result
 

@@ -54,6 +54,10 @@ async def submit_report(args: SubmitReportArgs, ctx: ToolContext) -> dict[str, A
         raise ToolError(ErrorKind.INVALID_ARGUMENT, "summary 太短，请写出包含关键数字的结论摘要")
 
     payload = args.model_dump()
+    # 模型经常忘记填 charts；用本轮真实产物兜底，避免报告里图片路径不可用
+    produced = [p for p in ctx.shared.get("artifacts", []) if p.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp"))]
+    if not payload.get("charts") and produced:
+        payload["charts"] = produced[:6]
     ctx.shared["report"] = payload
     ctx.publish("report", report=payload)
     return {

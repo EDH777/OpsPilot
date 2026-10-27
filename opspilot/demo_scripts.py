@@ -43,6 +43,36 @@ WHERE workshop_id='WS-03' AND CAST(alarm_time AS DATE) BETWEEN DATE '2026-09-28'
 GROUP BY 1 ORDER BY 2 DESC
 """.strip()
 
+CODE_CHART = """
+import os
+import duckdb
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+con = duckdb.connect(os.environ["OPSPILOT_DB_PATH"], read_only=True)
+df = con.execute('''
+    WITH e AS (
+        SELECT record_date, SUM(quantity) AS kwh FROM energy_record
+        WHERE workshop_id = 'WS-03' AND energy_type = 'electricity' GROUP BY 1
+    ), p AS (
+        SELECT record_date, SUM(output_qty - defect_qty) AS good FROM production_record
+        WHERE workshop_id = 'WS-03' GROUP BY 1
+    )
+    SELECT e.record_date, e.kwh / NULLIF(p.good, 0) AS unit_kwh
+    FROM e JOIN p USING (record_date) ORDER BY 1
+''').fetchdf()
+con.close()
+
+plt.figure(figsize=(8.4, 3.2))
+plt.plot(df["record_date"], df["unit_kwh"], color="#ea580c", linewidth=1.8)
+plt.title("WS-03 unit energy (kWh/piece)", fontsize=10)
+plt.grid(alpha=0.25)
+plt.tight_layout()
+plt.savefig("unit_energy_trend.png", dpi=140)
+print("chart saved, points:", len(df))
+""".strip()
+
 
 def mock_investigation() -> ScriptedLLM:
     report = {
@@ -90,6 +120,7 @@ def mock_investigation() -> ScriptedLLM:
             assistant(tool_calls=[tool_call("run_sql", {"sql": SQL_UNIT_ENERGY, "purpose": "对比各车间单位电耗基线期与异常期"})]),
             assistant(tool_calls=[tool_call("run_sql", {"sql": SQL_EQUIPMENT, "purpose": "定位三号车间设备级空转与电耗变化"})]),
             assistant(tool_calls=[tool_call("run_sql", {"sql": SQL_ALARMS, "purpose": "核对异常期告警构成"})]),
+            assistant(tool_calls=[tool_call("python_analysis", {"code": CODE_CHART, "purpose": "绘制三号车间单位电耗趋势"})]),
             assistant(
                 content="证据已足够：单位电耗上升由空压机与风机长期低负载空转导致。现在提交报告。",
                 tool_calls=[tool_call("submit_report", report)],

@@ -45,6 +45,11 @@ def settings(tmp_path: Path):
             "max_tool_calls": 12,
             "max_tokens": 60_000,
             "context_token_budget": 12_000,
+            "simple_max_steps": 4,
+            "simple_max_tool_calls": 5,
+            "simple_max_tokens": 20_000,
+            "simple_max_seconds": 120.0,
+            "simple_context_token_budget": 6_000,
         }
     )
 

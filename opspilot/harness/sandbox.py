@@ -72,8 +72,13 @@ class PythonSandbox:
             target.write_text(content, encoding="utf-8")
 
         if self.settings.sandbox == "docker":
-            return await self._run_docker(workdir, timeout)
-        return await self._run_subprocess(workdir, timeout)
+            result = await self._run_docker(workdir, timeout)
+        else:
+            result = await self._run_subprocess(workdir, timeout)
+
+        # 产物路径统一为"相对 artifacts_dir"，前端才能拼出可访问的 URL
+        result.artifacts = [f"{workdir.name}/{p}" for p in result.artifacts]
+        return result
 
     # ------------------------------------------------------------------ 后端
 
@@ -93,6 +98,10 @@ class PythonSandbox:
         started = time.perf_counter()
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
+            # -I 会忽略 PYTHONIOENCODING（等价于 -E），必须用 -X utf8 强制 UTF-8，
+            # 否则 Windows 子进程按 GBK 输出、父进程按 UTF-8 解码 → 中文乱码。
+            "-X",
+            "utf8",
             "-I",
             "main.py",
             cwd=str(workdir),

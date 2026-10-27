@@ -23,9 +23,36 @@ class InspectSchemaArgs(BaseModel):
 
 
 DESCRIPTION = (
-    "查看数据仓库的表结构、字段类型、行数、时间范围与指标口径。"
-    "不确定表名/字段名时先调用它；不要凭空猜测。"
+    "查看数据仓库的表结构、字段类型、行数、时间范围、指标口径，以及关键枚举列的值域。"
+    "不确定表名/字段名/枚举取值时先调用它；不要凭空猜测。"
 )
+
+# 这些列是"枚举型业务字段"，把值域直接给模型，能避免"猜值 → 空结果 → 再查"的往返
+_ENUM_COLUMNS = {
+    "energy_type",
+    "unit",
+    "shift",
+    "severity",
+    "equipment_type",
+    "process",
+    "workshop_id",
+    "product_code",
+    "alarm_code",
+    "code",
+}
+
+
+def _column_values(con, table: str, column: str, limit: int = 12) -> list | None:
+    try:
+        rows = con.execute(
+            f'SELECT DISTINCT "{column}" FROM "{table}" WHERE "{column}" IS NOT NULL '
+            f'ORDER BY 1 LIMIT {limit + 1}'
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - 个别列可能不可直接比较，忽略即可
+        return None
+    if not rows or len(rows) > limit:
+        return None
+    return [jsonable(r[0]) for r in rows]
 
 
 async def inspect_schema(args: InspectSchemaArgs, ctx: ToolContext) -> dict[str, Any]:
@@ -61,6 +88,11 @@ async def inspect_schema(args: InspectSchemaArgs, ctx: ToolContext) -> dict[str,
                     ).fetchall()
                 ],
             }
+            for col in info["columns"]:
+                if col["name"] in _ENUM_COLUMNS:
+                    values = _column_values(con, table, col["name"])
+                    if values is not None:
+                        col["values"] = values
             if "record_date" in {c["name"] for c in info["columns"]}:
                 lo, hi = con.execute(f'SELECT MIN(record_date), MAX(record_date) FROM "{table}"').fetchone()
                 info["date_range"] = [jsonable(lo), jsonable(hi)]
@@ -71,7 +103,7 @@ async def inspect_schema(args: InspectSchemaArgs, ctx: ToolContext) -> dict[str,
             "today": "2026-10-27",
             "tables": overview,
             "metric_glossary": glossary_dict(),
-            "hint": "先用 SELECT 聚合验证口径，再下结论；车间编号形如 WS-03。",
+            "hint": "枚举列的 values 已给出，请直接使用，不要猜测取值；车间编号形如 WS-03。",
         }
     finally:
         con.close()
@@ -91,6 +123,11 @@ def _describe_table(con, table: str, sample_rows: int) -> dict[str, Any]:
         "rows": table_row_count(con, table),
         "columns": columns,
     }
+    for col in columns:
+        if col["name"] in _ENUM_COLUMNS:
+            values = _column_values(con, table, col["name"])
+            if values is not None:
+                col["values"] = values
     if sample_rows:
         cur = con.execute(f'SELECT * FROM "{table}" LIMIT {int(sample_rows)}')
         result["sample"] = {

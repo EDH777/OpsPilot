@@ -578,6 +578,9 @@ function handleEvent(ev) {
       const chip = $(`.tool-chip[data-call="${cssEscape(d.call_id)}"]`);
       if (chip) chip.classList.add(d.ok ? "ok" : "fail");
       updateTraceItem(d);
+      if (d.ok && d.artifacts && d.artifacts.length) {
+        appendArtifacts(ensureActivityBubble(), d.artifacts, "本次生成的图表");
+      }
       break;
     }
     case "arg_repaired":
@@ -640,6 +643,50 @@ function ensureActivityBubble() {
   const bubble = wrap.querySelector(".bubble");
   state.stepBubbles.set("last", bubble);
   return bubble;
+}
+
+/* ------------------------------------------------------------------ 产物图表 */
+
+function encodePath(path) {
+  return String(path).split("/").map(encodeURIComponent).join("/");
+}
+
+function artifactUrl(path, runId = state.runId) {
+  if (!runId) return "";
+  return `/artifacts/${runId}/artifacts/${encodePath(path)}`;
+}
+
+function isImage(path) {
+  return /\.(png|jpe?g|svg|webp)$/i.test(String(path));
+}
+
+function appendArtifacts(bubble, artifacts, caption) {
+  const imgs = (artifacts || []).filter(isImage);
+  if (!imgs.length || !bubble) return;
+  let wrap = bubble.querySelector(".tool-artifacts");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.className = "tool-artifacts";
+    bubble.appendChild(wrap);
+  }
+  if (caption && !wrap.querySelector(".ta-caption")) {
+    const cap = document.createElement("div");
+    cap.className = "ta-caption";
+    cap.textContent = caption;
+    wrap.appendChild(cap);
+  }
+  imgs.forEach((p) => {
+    const src = artifactUrl(p);
+    if (Array.from(wrap.querySelectorAll("img")).some((i) => i.getAttribute("src") === src)) return;
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = p;
+    img.loading = "lazy";
+    img.onclick = () => window.open(src, "_blank");
+    img.onerror = () => img.remove();
+    wrap.appendChild(img);
+  });
+  scrollChat();
 }
 
 /* ------------------------------------------------------------------ 轨迹面板 */
@@ -786,12 +833,22 @@ function renderReportHtml(report, runId) {
     .join("");
   const recs = (report.recommendations || []).map((r) => `<li>${esc(r)}</li>`).join("");
   const limits = (report.limitations || []).map((r) => `<li>${esc(r)}</li>`).join("");
+  const charts = (report.charts || []).filter(isImage);
+  const chartsHtml = charts.length
+    ? `<div class="rc-h">图表</div><div class="tool-artifacts">${charts
+        .map(
+          (p) =>
+            `<img src="${artifactUrl(p, runId)}" alt="${esc(p)}" loading="lazy" onerror="this.remove()">`
+        )
+        .join("")}</div>`
+    : "";
 
   return `<div class="rc-head"><h3>${esc(report.title || "调查报告")}</h3>
       <div class="rc-sub">OpsPilot 自主调查 · 所有数字来自工具查询结果</div></div>
     <div class="rc-body">
       <p class="rc-summary">${esc(report.summary || "")}</p>
       ${metrics ? `<div class="rc-metrics">${metrics}</div>` : ""}
+      ${chartsHtml}
       <div class="rc-h">结论与证据</div>${findings}
       <div class="rc-cols">
         <div><div class="rc-h">改进建议</div><ul class="rc-list">${recs || "<li>—</li>"}</ul></div>
@@ -871,6 +928,14 @@ async function openRun(runId) {
               `<span class="tool-chip ok"><span class="dot"></span>${esc(g.name)}${g.count > 1 ? ` ×${g.count}` : ""}</span>`
           )
           .join("");
+    }
+
+    const produced = evResp.events
+      .filter((e) => e.type === "tool_finished")
+      .flatMap((e) => e.data.artifacts || []);
+    if (produced.length) {
+      const wrap = addMessage("assistant", "");
+      appendArtifacts(wrap.querySelector(".bubble"), produced, "调查过程中生成的图表");
     }
 
     let sawReport = false;

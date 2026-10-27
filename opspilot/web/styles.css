@@ -132,6 +132,15 @@ button { font: inherit; cursor: pointer; }
   100% { background: #fff; border-color: var(--line); transform: none; }
 }
 
+/* 工具产物（图表） */
+.tool-artifacts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.tool-artifacts .ta-caption { font-size: 11.5px; color: var(--muted); }
+.tool-artifacts img {
+  max-width: 100%; border: 1px solid var(--line); border-radius: 8px;
+  background: #fff; cursor: zoom-in;
+}
+.rc-body .tool-artifacts { margin-bottom: 8px; }
+
 /* 轻提示 */
 .toast {
   position: fixed; top: 18px; left: 50%; transform: translate(-50%, -12px);

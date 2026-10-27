@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from opspilot.config import Settings, get_settings
 from opspilot.core.events import Event, EventType
+from opspilot.core.routing import TaskProfile, classify_task
 from opspilot.core.types import (
     Message,
     Role,
@@ -52,6 +53,7 @@ class RunResult:
     session_id: str | None
     status: RunStatus
     task: str
+    profile: str = "investigation"
     answer: str | None = None
     report: dict[str, Any] | None = None
     messages: list[Message] = field(default_factory=list)
@@ -73,6 +75,7 @@ class RunResult:
             "session_id": self.session_id,
             "status": self.status.value,
             "task": self.task,
+            "profile": self.profile,
             "answer": self.answer,
             "report": self.report,
             "steps": [s.to_dict() for s in self.steps],
@@ -127,7 +130,32 @@ class AgentLoop:
         self.registry = registry or build_default_registry()
         self.state = state or StateStore(self.settings.state_db_path)
         self.executor = executor or ToolExecutor(self.registry, default_timeout_s=self.settings.tool_timeout_s)
-        self.context = context or ContextManager(token_budget=self.settings.context_token_budget)
+        self.context = context
+
+    # ------------------------------------------------------------------ 分级预算
+
+    def _budget_for(self, profile: TaskProfile) -> Budget:
+        s = self.settings
+        if profile is TaskProfile.SIMPLE:
+            return Budget(
+                max_steps=s.simple_max_steps,
+                max_tool_calls=s.simple_max_tool_calls,
+                max_tokens=s.simple_max_tokens,
+                max_seconds=s.simple_max_seconds,
+            )
+        return Budget(
+            max_steps=s.max_steps,
+            max_tool_calls=s.max_tool_calls,
+            max_tokens=s.max_tokens,
+            max_seconds=s.max_seconds,
+        )
+
+    def _context_budget(self, profile: TaskProfile) -> int:
+        return (
+            self.settings.simple_context_token_budget
+            if profile is TaskProfile.SIMPLE
+            else self.settings.context_token_budget
+        )
 
     # ------------------------------------------------------------------ 对外
 
@@ -140,16 +168,13 @@ class AgentLoop:
         emit: EventCallback | None = None,
     ) -> RunResult:
         run_id = run_id or new_id("run_")
+        profile = classify_task(task)
         messages = [
-            Message(role=Role.SYSTEM, content=build_system_prompt()),
+            Message(role=Role.SYSTEM, content=build_system_prompt(mode=profile.value)),
             Message(role=Role.USER, content=task),
         ]
-        budget = Budget(
-            max_steps=self.settings.max_steps,
-            max_tool_calls=self.settings.max_tool_calls,
-            max_tokens=self.settings.max_tokens,
-            max_seconds=self.settings.max_seconds,
-        )
+        budget = self._budget_for(profile)
+        context = self.context or ContextManager(token_budget=self._context_budget(profile))
         return await self._drive(
             run_id=run_id,
             session_id=session_id or new_id("sess_"),
@@ -158,6 +183,8 @@ class AgentLoop:
             budget=budget,
             usage=Usage(),
             emit=emit,
+            context=context,
+            profile=profile,
         )
 
     async def resume(self, run_id: str, *, emit: EventCallback | None = None) -> RunResult:
@@ -169,22 +196,22 @@ class AgentLoop:
 
         messages = [Message.from_dict(m) for m in (row.get("messages") or [])]
         usage_data = row.get("usage") or {}
-        budget = Budget(
-            max_steps=self.settings.max_steps,
-            max_tool_calls=self.settings.max_tool_calls,
-            max_tokens=self.settings.max_tokens,
-            max_seconds=self.settings.max_seconds,
-        )
+        task = row.get("task") or ""
+        profile = classify_task(task)
+        budget = self._budget_for(profile)
         budget.steps = int(row.get("step") or 0)
         budget.tokens = int(usage_data.get("total_tokens") or 0)
+        context = self.context or ContextManager(token_budget=self._context_budget(profile))
         return await self._drive(
             run_id=run_id,
             session_id=row.get("session_id") or new_id("sess_"),
-            task=row.get("task") or "",
+            task=task,
             messages=messages,
             budget=budget,
             usage=Usage(**usage_data) if usage_data else Usage(),
             emit=emit,
+            context=context,
+            profile=profile,
             resumed=True,
         )
 
@@ -200,6 +227,8 @@ class AgentLoop:
         budget: Budget,
         usage: Usage,
         emit: EventCallback | None,
+        context: ContextManager,
+        profile: TaskProfile,
         resumed: bool = False,
     ) -> RunResult:
         tracer = Tracer(run_id, self.settings.runs_dir)
@@ -259,6 +288,8 @@ class AgentLoop:
             model=self.llm.model_name,
             tools=self.registry.names(),
             budget=budget.snapshot(),
+            profile=profile.value,
+            profile_label=profile.label,
         )
 
         try:
@@ -274,7 +305,7 @@ class AgentLoop:
                 step_started = time.time()
                 step = StepRecord(index=budget.steps, started_at=step_started)
 
-                packed, stats = self.context.compact(messages)
+                packed, stats = context.compact(messages)
                 if stats.compacted or stats.truncated_outputs:
                     publish(EventType.CONTEXT_COMPACTED, step=budget.steps, **stats.to_dict())
 
@@ -483,6 +514,7 @@ class AgentLoop:
             session_id=session_id,
             status=status,
             task=task,
+            profile=profile.value,
             answer=answer,
             report=report,
             messages=messages,

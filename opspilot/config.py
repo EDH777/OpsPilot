@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     max_tokens: int = 300_000
     max_seconds: float = 900.0
     context_token_budget: int = 30_000
+    # 简单查询（"看一下/汇总"类）单独给一档更紧的预算
+    simple_max_steps: int = 6
+    simple_max_tool_calls: int = 8
+    simple_max_tokens: int = 80_000
+    simple_max_seconds: float = 300.0
+    simple_context_token_budget: int = 16_000
     sql_max_rows: int = 500
     sql_timeout_s: float = 20.0
     tool_timeout_s: float = 60.0
