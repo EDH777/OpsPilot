@@ -39,6 +39,7 @@ async function init() {
   // 深链：/#/run/<run_id> 直接打开某次调查（便于分享与演示）
   const m = location.hash.match(/#\/run\/([A-Za-z0-9_]+)/);
   if (m) openRun(m[1]);
+  else if (location.hash.startsWith("#/reports")) switchView("reports");
 }
 
 /* ------------------------------------------------------------------ 导航 */

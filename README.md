@@ -98,6 +98,8 @@ Trace、报告、图表全部落盘：`runs/<run_id>/trace.jsonl`、`runs/<run_i
 - **报告中心**：历史报告、Markdown 导出、Trace 回放
 - 前端零构建、零 CDN，图表为手写 SVG，内网/离线可用
 
+![报告中心](docs/screenshots/reports.png)
+
 ---
 
 ## 4. 快速开始
