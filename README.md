@@ -149,6 +149,19 @@ Trace、报告、图表全部落盘：`runs/<run_id>/trace.jsonl`、`runs/<run_i
 
 ![断点恢复](docs/screenshots/resume.png)
 
+### 3.8 运行统计（可观测性）
+
+`GET /api/metrics?days=30` 把 SQLite 与 Trace 汇总成运维视图（`days=0` 表示全部）：
+
+- **KPI**：运行总数、成功率、平均耗时、Token 总量、工具失败率
+- **趋势与状态**：近 30 天每日运行量、终态分布（成功/失败/超限/中断）
+- **工具健康度**：每个工具的调用次数、失败次数、平均耗时，以及失败调用的 `error.kind` 分布
+- Trace 解析按 `(文件, mtime)` 做缓存，刷新不会重复读全量 JSONL
+
+前端新增「运行统计」页，与驾驶舱、调查工作台、报告中心并列。
+
+![运行统计](docs/screenshots/metrics.png)
+
 ## 4. 快速开始
 
 ### 环境
@@ -206,7 +219,7 @@ WS-03: 单位电耗 2.820 → 3.191 kWh/件 (+13.2%)，日均产量 1207.1 → 1
 & "D:\Anaconda3\envs\chAgent\python.exe" -m pytest -q
 ```
 
-当前 **81 个测试全部通过**，覆盖参数修复、错误分类、预算、上下文压缩、检查点、
+当前 **84 个测试全部通过**，覆盖参数修复、错误分类、预算、上下文压缩、检查点、
 SQL 只读防护、沙箱、Loop 端到端、SSE 接口与看板变更推送、报告导出。
 
 ---
@@ -240,7 +253,7 @@ OpsPilot/
 │   ├── web/                  # 零构建前端（index.html / app.js / styles.css）
 │   └── cli.py                # 命令行
 ├── evals/                    # 验收任务集与评测脚本
-├── tests/                    # 81 个测试
+├── tests/                    # 84 个测试
 ├── data/                     # DuckDB 数据文件（gitignore）
 ├── runs/                     # Trace / 图表 / 状态（gitignore）
 └── docs/                     # 架构说明与截图

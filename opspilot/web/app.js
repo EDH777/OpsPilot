@@ -68,6 +68,7 @@ async function init() {
   if (m) openRun(m[1]);
   else if (ms) openSession(ms[1]);
   else if (location.hash.startsWith("#/reports")) switchView("reports");
+  else if (location.hash.startsWith("#/metrics")) switchView("metrics");
 }
 
 /* ------------------------------------------------------------------ 实时看板（SSE） */
@@ -146,6 +147,7 @@ function bindNav() {
 const PAGE_META = {
   dashboard: ["业务驾驶舱", "生产 · 能耗 · 设备数据统一视图"],
   workbench: ["AI 调查工作台", "自然语言提问 → 自主取证 → 可追溯报告"],
+  metrics: ["运行统计", "成功率 · 耗时 · Token · 工具健康度"],
   reports: ["报告中心", "历史调查结论与证据"],
 };
 
@@ -156,6 +158,7 @@ function switchView(name) {
   const [title, sub] = PAGE_META[name] || ["", ""];
   $("#page-title").textContent = title;
   $("#page-sub").textContent = sub;
+  if (name === "metrics") loadMetrics();
 }
 
 /* ------------------------------------------------------------------ 健康检查 */
@@ -322,7 +325,124 @@ function renderAlarms(rows) {
     .join("");
 }
 
+/* ------------------------------------------------------------------ 运行统计 */
+
+let metricsSeq = 0;
+
+async function loadMetrics() {
+  const seq = ++metricsSeq;
+  try {
+    const r = await fetch("/api/metrics?days=30", { cache: "no-store" });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    if (seq !== metricsSeq) return;
+    renderMetrics(data);
+  } catch (e) {
+    console.error(e);
+    $("#metrics-kpis").innerHTML = `<div class="metrics-empty">统计加载失败：${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function formatMetric(value) {
+  return typeof value === "number"
+    ? value.toLocaleString("zh-CN", { maximumFractionDigits: 1 })
+    : String(value ?? "");
+}
+
+function renderMetrics(data) {
+  const kpis = data.kpis || [];
+  $("#metrics-kpis").innerHTML = kpis
+    .map(
+      (k) => `<div class="kpi" data-kpi="${esc(k.key)}">
+        <div class="kpi-label">${esc(k.label)}</div>
+        <div class="kpi-value">${formatMetric(k.value)}<span class="kpi-unit">${esc(k.unit || "")}</span></div>
+      </div>`
+    )
+    .join("");
+
+  const daily = data.daily || [];
+  $("#metrics-trend").innerHTML = daily.length
+    ? simpleBarChart(daily.map((d) => d.date), daily.map((d) => d.runs), { height: 250 })
+    : `<div class="metrics-empty">暂无数据</div>`;
+
+  const statuses = data.status_counts || [];
+  const total = statuses.reduce((sum, s) => sum + s.count, 0) || 1;
+  $("#metrics-status").innerHTML = statuses.length
+    ? statuses
+        .map((s) => {
+          const cls = s.status === "completed" ? "good" : s.status === "running" ? "" : "bad";
+          return `<div class="status-row ${cls}">
+            <span class="sr-label">${esc(statusText(s.status))}</span>
+            <span class="sr-bar"><i style="width:${Math.round((s.count / total) * 100)}%"></i></span>
+            <span class="sr-val">${s.count} · ${((s.count / total) * 100).toFixed(0)}%</span>
+          </div>`;
+        })
+        .join("")
+    : `<div class="metrics-empty">暂无运行</div>`;
+
+  const tools = data.tools || [];
+  $("#metrics-tools").innerHTML = tools.length
+    ? `<table class="metrics-table">
+        <thead><tr><th>工具</th><th class="num">调用</th><th class="num">失败</th><th class="num">平均耗时</th></tr></thead>
+        <tbody>${tools
+          .map(
+            (t) => `<tr>
+              <td>${esc(t.name)}</td>
+              <td class="num">${t.calls}</td>
+              <td class="num">${t.failures}</td>
+              <td class="num">${t.avg_latency_ms} ms</td>
+            </tr>`
+          )
+          .join("")}</tbody>
+      </table>`
+    : `<div class="metrics-empty">暂无工具调用</div>`;
+
+  const errors = data.error_kinds || [];
+  const maxErr = Math.max(...errors.map((e) => e.count), 1);
+  $("#metrics-errors").innerHTML = errors.length
+    ? errors
+        .map(
+          (e) => `<div class="status-row bad">
+            <span class="sr-label">${esc(e.kind)}</span>
+            <span class="sr-bar"><i style="width:${Math.round((e.count / maxErr) * 100)}%"></i></span>
+            <span class="sr-val">${e.count} 次</span>
+          </div>`
+        )
+        .join("")
+    : `<div class="metrics-empty">没有失败的工具调用</div>`;
+}
+
 /* ------------------------------------------------------------------ 图表（SVG） */
+
+function simpleBarChart(labels, values, { height = 250 } = {}) {
+  const W = 820, H = height, padL = 40, padR = 12, padT = 12, padB = 26;
+  const max = Math.max(...values, 1);
+  // 整数刻度：max=38 → 0/10/20/30/40，而不是 38/29/19/10/0
+  const tickStep = Math.max(1, Math.ceil(max / 4));
+  const maxY = tickStep * 4;
+  const y = (v) => padT + (1 - v / maxY) * (H - padT - padB);
+
+  let g = "";
+  for (let i = 0; i <= 4; i++) {
+    const tick = tickStep * i;
+    const yy = y(tick);
+    g += `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" stroke="#eef1f6"/>`;
+    g += `<text x="${padL - 8}" y="${(yy + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="#98a2b3">${tick}</text>`;
+  }
+
+  const step = (W - padL - padR) / Math.max(labels.length, 1);
+  const bw = Math.max(2, Math.min(18, step * 0.55));
+  const labelStep = Math.ceil(labels.length / 7);
+  labels.forEach((label, i) => {
+    const cx = padL + step * i + step / 2;
+    const v = values[i] || 0;
+    g += `<rect x="${(cx - bw / 2).toFixed(1)}" y="${y(v).toFixed(1)}" width="${bw.toFixed(1)}" height="${(H - padB - y(v)).toFixed(1)}" rx="3" fill="#ea580c" opacity="${v ? 0.9 : 0.12}"/>`;
+    if (i % labelStep === 0 || i === labels.length - 1) {
+      g += `<text x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#98a2b3">${esc(label.slice(5))}</text>`;
+    }
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">${g}</svg>`;
+}
 
 function niceTicks(min, max, count = 4) {
   const span = max - min || 1;

@@ -138,7 +138,7 @@ class StateStore:
         if session_id:
             sql += " WHERE session_id = ?"
             params.append(session_id)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -153,7 +153,8 @@ class StateStore:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT run_id, task, report FROM runs WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT run_id, task, report FROM runs WHERE session_id = ? "
+                "ORDER BY created_at ASC, rowid ASC",
                 (session_id,),
             ).fetchall()
             if not rows:
@@ -179,7 +180,7 @@ class StateStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT run_id, session_id, task, title, status, report, created_at, updated_at "
-                "FROM runs WHERE report IS NOT NULL ORDER BY created_at DESC LIMIT ?",
+                "FROM runs WHERE report IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [self._decode(dict(r)) for r in rows]
@@ -219,13 +220,29 @@ class StateStore:
         if exclude_run_id:
             sql += " AND run_id != ?"
             params.append(exclude_run_id)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         out = [self._decode(dict(r)) for r in rows]
         out.reverse()
         return out
+
+    def runs_since(self, since: float = 0.0, limit: int = 500) -> list[dict[str, Any]]:
+        """按时间窗口取 run 元数据，供指标聚合使用（不取 messages/report 大字段）。"""
+        sql = (
+            "SELECT run_id, session_id, status, step, usage, created_at, updated_at "
+            "FROM runs"
+        )
+        params: list[Any] = []
+        if since:
+            sql += " WHERE created_at >= ?"
+            params.append(since)
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._decode(dict(r)) for r in rows]
 
     def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         """会话维度：一个 session 下可能有多轮 run，侧栏应按会话展示。"""
@@ -234,18 +251,18 @@ class StateStore:
                 """
                 SELECT s.session_id,
                        (SELECT r.task FROM runs r WHERE r.session_id = s.session_id
-                        ORDER BY r.created_at ASC LIMIT 1) AS title,
+                        ORDER BY r.created_at ASC, r.rowid ASC LIMIT 1) AS title,
                        COUNT(*) AS runs,
                        MIN(s.created_at) AS started_at,
                        MAX(s.created_at) AS last_at,
                        (SELECT r.status FROM runs r WHERE r.session_id = s.session_id
-                        ORDER BY r.created_at DESC LIMIT 1) AS last_status,
+                        ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_status,
                        (SELECT r.run_id FROM runs r WHERE r.session_id = s.session_id
-                        ORDER BY r.created_at DESC LIMIT 1) AS last_run_id
+                        ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_run_id
                 FROM runs s
                 WHERE s.session_id IS NOT NULL
                 GROUP BY s.session_id
-                ORDER BY last_at DESC
+                ORDER BY last_at DESC, s.session_id
                 LIMIT ?
                 """,
                 (limit,),
@@ -256,7 +273,7 @@ class StateStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT run_id, session_id, task, status, step, usage, answer, report, created_at "
-                "FROM runs WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
+                "FROM runs WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
         return [self._decode(dict(r)) for r in rows]

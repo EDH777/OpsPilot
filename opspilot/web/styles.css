@@ -149,6 +149,28 @@ button { font: inherit; cursor: pointer; }
 }
 .rc-body .tool-artifacts { margin-bottom: 8px; }
 
+/* 运行统计 */
+.status-list { display: flex; flex-direction: column; gap: 9px; }
+.status-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.status-row .sr-label { width: 86px; color: var(--ink-2); flex: 0 0 auto; }
+.status-row .sr-bar { flex: 1; height: 8px; background: #f1f3f7; border-radius: 4px; overflow: hidden; }
+.status-row .sr-bar > i {
+  display: block; height: 100%; border-radius: 4px;
+  background: linear-gradient(90deg, #fdba74, #ea580c);
+}
+.status-row.bad .sr-bar > i { background: linear-gradient(90deg, #fca5a5, #dc2626); }
+.status-row.good .sr-bar > i { background: linear-gradient(90deg, #6ee7b7, #059669); }
+.status-row .sr-val {
+  width: 96px; text-align: right; color: var(--muted);
+  font-variant-numeric: tabular-nums; flex: 0 0 auto;
+}
+.metrics-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.metrics-table th, .metrics-table td { padding: 7px 8px; border-bottom: 1px solid var(--line-2); text-align: left; }
+.metrics-table th { color: var(--muted); font-weight: 500; font-size: 11px; }
+.metrics-table td.num, .metrics-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.metrics-table tr:last-child td { border-bottom: 0; }
+.metrics-empty { color: var(--muted); font-size: 12.5px; padding: 10px 2px; }
+
 /* 轻提示 */
 .toast {
   position: fixed; top: 18px; left: 50%; transform: translate(-50%, -12px);

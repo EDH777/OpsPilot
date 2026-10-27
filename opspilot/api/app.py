@@ -27,6 +27,7 @@ from opspilot.llm import build_llm
 from opspilot.llm.base import LLMError
 from opspilot.services.analytics import dashboard_overview
 from opspilot.services.data_version import data_signature
+from opspilot.services.metrics import compute_metrics
 from opspilot.services.reporting import dedupe_reports, report_to_markdown
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -190,6 +191,14 @@ async def dashboard_stream(request: Request, days: int = Query(default=30, ge=7,
 
 
 # --------------------------------------------------------------------- 运行
+
+@app.get("/api/metrics")
+async def metrics(days: int = Query(default=30, ge=0, le=365)):
+    """运行统计：状态、耗时、token、工具调用与错误分布。days=0 表示全部。"""
+    since = time.time() - days * 86400 if days else 0.0
+    rows = app.state.store.runs_since(since, limit=500)
+    return await asyncio.to_thread(compute_metrics, rows, settings.runs_dir, days=days)
+
 
 @app.get("/api/runs")
 async def list_runs(session_id: str | None = None, limit: int = Query(default=30, ge=1, le=100)):

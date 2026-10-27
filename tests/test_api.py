@@ -220,3 +220,23 @@ def test_favicon_assets(client):
         r = client.get(path)
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("image/png")
+
+
+def test_metrics_endpoint(client):
+    r = client.get("/api/metrics?days=30")
+    assert r.status_code == 200
+    body = r.json()
+    assert [k["key"] for k in body["kpis"]] == [
+        "runs",
+        "success_rate",
+        "avg_duration",
+        "tokens",
+        "tool_failure_rate",
+    ]
+    assert len(body["daily"]) == 30
+    assert body["window"]["runs"] >= 1
+    assert "tools" in body and "error_kinds" in body
+
+    all_time = client.get("/api/metrics?days=0").json()
+    assert all_time["window"]["days"] == 0
+    assert all_time["window"]["runs"] >= body["window"]["runs"]

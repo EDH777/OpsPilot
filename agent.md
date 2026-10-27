@@ -115,7 +115,7 @@ OpsPilot/
 │   ├── web/                 index.html / app.js / styles.css（零构建、手写 SVG 图表）
 │   └── cli.py
 ├── evals/                   tasks.json + run_eval.py + results/
-├── tests/                   81 个测试
+├── tests/                   84 个测试
 ├── scripts/                 probe_llm / verify_data / check_env / check_web
 ├── data/  runs/             DuckDB 与运行产物（gitignore）
 └── docs/                    architecture.md + screenshots/
@@ -183,8 +183,8 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 跨轮上下文：新 run 自动带上同一会话最近 4 轮的「提问 + 结论摘要」（上限 2400 字符）
 - [x] 断点恢复：启动时把遗留 running 标记 interrupted；会话内一键「继续运行」，`resume_count` 计数
 - [x] 状态库 schema v2：启动自动迁移（补 `resume_count` 列），老库无需手工处理
-- [x] favicon：由根目录 `icon.png` 生成 128/256 两档放入 `opspilot/web/`
-- [x] 81 个测试全绿
+- [x] 运行统计：`GET /api/metrics` + 前端「运行统计」页（成功率/耗时/token/工具健康度/错误分布）
+- [x] 84 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）
