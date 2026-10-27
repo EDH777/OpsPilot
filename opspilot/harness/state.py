@@ -30,15 +30,6 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, created_at DESC);
-
--- 删除对话时只保留用户提问，作为轻量归档
-CREATE TABLE IF NOT EXISTS deleted_sessions (
-    session_id  TEXT PRIMARY KEY,
-    first_query TEXT,
-    queries     TEXT,
-    run_count   INTEGER,
-    deleted_at  REAL
-);
 """
 
 _JSON_FIELDS = {"messages", "usage", "report"}
@@ -117,51 +108,36 @@ class StateStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def delete_session(self, session_id: str) -> dict[str, Any] | None:
-        """删除一个会话的全部 run，但把用户提问归档保留下来。
+    def archive_session(self, session_id: str) -> dict[str, Any] | None:
+        """删除对话，但保留产出过报告的运行。
 
-        返回 run_ids / queries 供调用方清理 Trace 与产物目录。
+        - 有报告的 run：脱离会话（session_id=NULL），清空 messages/answer，
+          保留 task（产生报告的那句提问）、report、Trace 与产物目录；
+        - 没有报告的 run：整行删除，由调用方清理对应目录。
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT run_id, task FROM runs WHERE session_id = ? ORDER BY created_at ASC",
+                "SELECT run_id, task, report FROM runs WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
             if not rows:
                 return None
-            queries = [r["task"] for r in rows if r["task"]]
-            run_ids = [r["run_id"] for r in rows]
-            self._conn.execute("DELETE FROM runs WHERE session_id = ?", (session_id,))
-            self._conn.execute(
-                "INSERT OR REPLACE INTO deleted_sessions (session_id, first_query, queries, run_count, deleted_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    session_id,
-                    queries[0] if queries else "",
-                    json.dumps(queries, ensure_ascii=False),
-                    len(run_ids),
-                    time.time(),
-                ),
-            )
-            self._conn.commit()
-        return {"session_id": session_id, "run_ids": run_ids, "queries": queries, "run_count": len(run_ids)}
 
-    def list_deleted_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT session_id, first_query, queries, run_count, deleted_at "
-                "FROM deleted_sessions ORDER BY deleted_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        out = []
-        for row in rows:
-            item = dict(row)
-            try:
-                item["queries"] = json.loads(item.get("queries") or "[]")
-            except json.JSONDecodeError:
-                item["queries"] = []
-            out.append(item)
-        return out
+            kept: list[dict[str, Any]] = []
+            removed: list[str] = []
+            for row in rows:
+                has_report = bool(row["report"]) and row["report"] != "null"
+                if has_report:
+                    self._conn.execute(
+                        "UPDATE runs SET session_id = NULL, messages = '[]', answer = NULL WHERE run_id = ?",
+                        (row["run_id"],),
+                    )
+                    kept.append({"run_id": row["run_id"], "task": row["task"]})
+                else:
+                    self._conn.execute("DELETE FROM runs WHERE run_id = ?", (row["run_id"],))
+                    removed.append(row["run_id"])
+            self._conn.commit()
+        return {"kept": kept, "removed": removed, "queries": [r["task"] for r in rows if r["task"]]}
 
     def list_reports(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:

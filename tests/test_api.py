@@ -172,38 +172,46 @@ def test_session_detail_404(client):
     assert client.get("/api/sessions/sess_not_exists").status_code == 404
 
 
-def test_delete_session_removes_files_and_reports(client):
-    sid, events = _run_once(client, "三号车间单位产品电耗为什么升高？")
+def test_delete_session_keeps_reports_and_trace(client):
+    sid, _ = _run_once(client, "三号车间单位产品电耗为什么升高？")
+    sid2, _ = _run_once(client, "看一下二号车间这个月的用电情况", sid)
+    assert sid2 == sid
+
     runs = client.get(f"/api/sessions/{sid}").json()["runs"]
-    assert runs
-    run_ids = [r["run_id"] for r in runs]
-    report_ids = {
-        rid for rep in client.get("/api/reports").json()["reports"] for rid in rep.get("run_ids", [])
-    }
-    assert set(run_ids) & report_ids, "调查 run 应产生报告"
+    assert len(runs) >= 2
+    report_run = next(r for r in runs if r.get("report"))
+    plain_run = next(r for r in runs if not r.get("report"))
 
     from opspilot.config import get_settings
 
-    run_dir = get_settings().runs_dir / run_ids[0]
-    assert run_dir.exists()
+    report_dir = get_settings().runs_dir / report_run["run_id"]
+    plain_dir = get_settings().runs_dir / plain_run["run_id"]
+    assert report_dir.exists() and plain_dir.exists()
 
     resp = client.delete(f"/api/sessions/{sid}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["deleted"] is True
-    assert body["run_count"] >= 1
-    assert body["queries"][0] == "三号车间单位产品电耗为什么升高？"
+    assert [k["run_id"] for k in body["kept_reports"]] == [report_run["run_id"]]
+    assert body["removed_runs"] == [plain_run["run_id"]]
 
+    # 会话消失；无报告的 run 与文件删除
     assert client.get(f"/api/sessions/{sid}").status_code == 404
-    assert not run_dir.exists(), "Trace 与产物目录应被删除"
+    assert not plain_dir.exists()
 
-    remaining = {
+    # 报告 + Trace + 提问保留，但聊天文本清空
+    kept = client.get(f"/api/runs/{report_run['run_id']}").json()["run"]
+    assert kept["session_id"] is None
+    assert kept["report"]["title"]
+    assert kept["task"] == "三号车间单位产品电耗为什么升高？"
+    assert not kept.get("messages")
+    assert report_dir.exists() and (report_dir / "trace.jsonl").exists()
+
+    report_ids = {
         rid for rep in client.get("/api/reports").json()["reports"] for rid in rep.get("run_ids", [])
     }
-    assert not (set(run_ids) & remaining), "报告应随对话一起删除"
+    assert report_run["run_id"] in report_ids
 
-    archived = client.get("/api/deleted-sessions").json()["sessions"]
-    assert any(item["session_id"] == sid for item in archived)
     assert client.delete("/api/sessions/sess_not_exists").status_code == 404
 
 

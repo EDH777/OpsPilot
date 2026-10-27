@@ -153,8 +153,9 @@ sequenceDiagram
 点开时按 `created_at` 顺序取出该 session 的全部 run 并重放各自的事件流；
 新增提问沿用当前 `session_id`，因此不会每问一句就多出一个"对话"。
 
-删除会话时：`runs` 行、报告、`runs/<run_id>/` 下的 Trace 与图表一起删除，
-用户提问写入 `deleted_sessions` 归档（不保留回答与文件），前端把最后一句提问回填输入框。
+删除会话时：没有报告的 run 连同 `runs/<run_id>/` 目录一起删除；
+有报告的 run 置 `session_id=NULL`、清空 messages/answer，但保留 report、task（提问）与 Trace/产物，
+因此对话消失、报告仍在报告中心可查。
 
 - 崩溃/重启后 `POST /api/runs/{id}/resume` 从最后一条消息继续；
 - 已完成/已取消的 run 拒绝续跑；

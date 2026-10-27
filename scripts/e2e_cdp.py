@@ -207,18 +207,16 @@ async def main() -> None:
                 await js(
                     ws,
                     counter,
-                    "JSON.stringify({input: document.querySelector('#input').value,"
-                    " stillExists: !!document.querySelector('.session-item[data-session=\"' + %s + '\"]'),"
+                    "JSON.stringify({stillExists: !!document.querySelector('.session-item[data-session=\"' + %s + '\"]'),"
                     " active: document.querySelectorAll('.session-item.active').length,"
-                    " deletedCount: document.querySelector('#deleted-count').textContent,"
-                    " users: document.querySelectorAll('.msg.user').length})" % json.dumps(sid),
+                    " users: document.querySelectorAll('.msg.user').length,"
+                    " reportsText: document.querySelector('#report-list').textContent})" % json.dumps(sid),
                 )
             )
             print("删除后:", after_delete)
             assert not after_delete["stillExists"], "会话仍留在侧栏"
             assert after_delete["users"] == 0, "删除后聊天区应清空"
-            assert "二号车间" in after_delete["input"], "应保留并回填最后一句提问"
-            assert int(after_delete["deletedCount"]) >= 1, "已删除提问未归档"
+            assert "三号车间单位产品电耗上升原因调查" in after_delete["reportsText"], "报告应保留在报告中心"
 
             shot2 = await cdp(ws, counter, "Page.captureScreenshot", {"format": "png"})
             (OUT.parent / "e2e_deleted.png").write_bytes(base64.b64decode(shot2["result"]["data"]))

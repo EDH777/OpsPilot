@@ -54,7 +54,7 @@ async function init() {
     if (state.runId) showRunTrace(state.runId);
   });
   await checkHealth();
-  await Promise.all([loadSessions(), loadReports(), loadDeleted()]);
+  await Promise.all([loadSessions(), loadReports()]);
   if (state.staticMode) {
     // 截图/打印模式：不开长连接，只取一次快照
     await loadDashboard();
@@ -1006,7 +1006,7 @@ function addReportCard(report, runId = state.runId) {
   bindReportActions(el);
 }
 
-function renderReportHtml(report, runId) {
+function renderReportHtml(report, runId, sourceQuery = "") {
   const badge = (c) =>
     c === "已验证事实" ? "verified" : c === "证据支持" ? "supported" : "unverified";
   const metrics = (report.metrics || [])
@@ -1042,7 +1042,8 @@ function renderReportHtml(report, runId) {
     : "";
 
   return `<div class="rc-head"><h3>${esc(report.title || "调查报告")}</h3>
-      <div class="rc-sub">OpsPilot 自主调查 · 所有数字来自工具查询结果</div></div>
+      <div class="rc-sub">OpsPilot 自主调查 · 所有数字来自工具查询结果</div>
+      ${sourceQuery ? `<div class="rc-query">来源提问：${esc(sourceQuery)}</div>` : ""}</div>
     <div class="rc-body">
       <p class="rc-summary">${esc(report.summary || "")}</p>
       ${metrics ? `<div class="rc-metrics">${metrics}</div>` : ""}
@@ -1113,58 +1114,23 @@ async function deleteSession(sessionId) {
     return;
   }
   const ok = window.confirm(
-    "删除这个对话？\n\n将移除该对话的全部轮次、报告、图表与 Trace，只保留你的提问。"
+    "删除这个对话？\n\n普通问答与相关文件会被清除；已生成的报告和执行轨迹会保留，可在报告中心查看。"
   );
   if (!ok) return;
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
-    const lastQuery = (data.queries || []).slice(-1)[0] || "";
     if (state.sessionId === sessionId) {
       resetWorkbench();
       switchView("workbench");
-      if (lastQuery) {
-        $("#input").value = lastQuery;
-        $("#input").focus();
-      }
     }
-    await Promise.all([loadSessions(), loadDeleted(), loadReports(false)]);
-    showToast(lastQuery ? "对话已删除，提问已保留并填入输入框" : "对话已删除");
+    await Promise.all([loadSessions(), loadReports(false)]);
+    const kept = (data.kept_reports || []).length;
+    showToast(kept ? `对话已删除，保留 ${kept} 份报告及其轨迹` : "对话已删除");
   } catch (e) {
     console.error(e);
     showToast("删除失败");
-  }
-}
-
-async function loadDeleted() {
-  try {
-    const r = await fetch("/api/deleted-sessions?limit=20", { cache: "no-store" });
-    const data = await r.json();
-    const list = data.sessions || [];
-    $("#deleted-count").textContent = String(list.length);
-    const el = $("#deleted-list");
-    if (!list.length) {
-      el.innerHTML = `<div class="side-empty">删除对话后，提问会保留在这里</div>`;
-      return;
-    }
-    el.innerHTML = list
-      .map(
-        (s) => `<button class="deleted-item" data-q="${esc(s.first_query || "")}" title="${esc(
-          (s.queries || []).join(" / ")
-        )}">${esc(s.first_query || "（无提问）")}</button>`
-      )
-      .join("");
-    $$(".deleted-item", el).forEach((btn) =>
-      btn.addEventListener("click", () => {
-        switchView("workbench");
-        $("#input").value = btn.dataset.q;
-        $("#input").focus();
-        showToast("已填入当时的提问");
-      })
-    );
-  } catch (e) {
-    console.error(e);
   }
 }
 
@@ -1253,8 +1219,16 @@ async function openRun(runId) {
     const { run } = await resp.json();
     if (run?.session_id) {
       await openSession(run.session_id, runId);
+    } else if (run) {
+      // 来自已删除对话的归档报告：只展示报告与轨迹
+      switchView("workbench");
+      resetWorkbench();
+      state.runId = runId;
+      if (run.report) addReportCard(run.report, runId, run.task);
+      await showRunTrace(runId);
+      $("#chat-empty")?.remove();
     } else {
-      showToast("该运行没有会话信息");
+      showToast("该运行不存在");
     }
   } catch (e) {
     console.error(e);
@@ -1278,6 +1252,7 @@ async function loadReports(autoSelect = true) {
         const title = (rep.report && rep.report.title) || rep.title || rep.task || "调查报告";
         return `<button class="report-item" data-run="${rep.run_id}">
           <div class="ri-title">${esc(title)}</div>
+          <div class="ri-query">提问：${esc(rep.task || "")}</div>
           <div class="ri-meta">${relTime(rep.created_at)} · ${statusText(rep.status)}${
             rep.duplicates > 1 ? ` · <span class="dup">同内容 ${rep.duplicates} 份</span>` : ""
           }</div>
@@ -1302,7 +1277,7 @@ async function showReport(runId) {
       $("#report-detail").innerHTML = `<div class="empty-state small"><p>该运行没有结构化报告。</p></div>`;
       return;
     }
-    $("#report-detail").innerHTML = `<div class="report-card" style="margin-top:0">${renderReportHtml(run.report, runId)}</div>`;
+    $("#report-detail").innerHTML = `<div class="report-card" style="margin-top:0">${renderReportHtml(run.report, runId, run.task)}</div>`;
   } catch (e) {
     console.error(e);
   }

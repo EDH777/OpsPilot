@@ -282,25 +282,34 @@ def test_state_store_roundtrip(tmp_path: Path):
     store.close()
 
 
-def test_state_delete_session_archives_queries(tmp_path: Path):
+def test_state_archive_session_keeps_report_runs(tmp_path: Path):
     store = StateStore(tmp_path / "state.sqlite3")
-    store.save("r1", session_id="s1", task="第一问", status="completed")
-    store.save("r2", session_id="s1", task="第二问", status="completed")
+    store.save(
+        "r1",
+        session_id="s1",
+        task="三号车间电耗为什么升高",
+        status="completed",
+        report={"title": "调查报告", "summary": "摘要"},
+    )
+    store.save("r2", session_id="s1", task="那看一下9月份的", status="completed")
     store.save("r3", session_id="s2", task="别的会话", status="completed")
 
-    result = store.delete_session("s1")
+    result = store.archive_session("s1")
     assert result is not None
-    assert result["run_count"] == 2
-    assert set(result["queries"]) == {"第一问", "第二问"}
+    assert [item["run_id"] for item in result["kept"]] == ["r1"]
+    assert result["removed"] == ["r2"]
+
+    kept = store.load("r1")
+    assert kept["session_id"] is None
+    assert kept["task"] == "三号车间电耗为什么升高"
+    assert kept["report"]["title"] == "调查报告"
+    assert kept["answer"] is None
+    assert not kept.get("messages")
+
+    assert store.load("r2") is None, "无报告的 run 应被删除"
     assert store.session_runs("s1") == []
     assert len(store.session_runs("s2")) == 1
-
-    deleted = store.list_deleted_sessions()
-    assert deleted[0]["session_id"] == "s1"
-    assert deleted[0]["run_count"] == 2
-    assert set(deleted[0]["queries"]) == {"第一问", "第二问"}
-
-    assert store.delete_session("s1") is None  # 已删除
+    assert store.archive_session("s1") is None
     store.close()
 
 

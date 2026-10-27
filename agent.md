@@ -179,7 +179,7 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 点气泡任意位置切换右侧轨迹（历史模式有提示条 + 返回最新）；`scripts/e2e_cdp.py` 覆盖
 - [x] 报告：仅 `submit_report` 生成；简单查询不生成；报告中心按完整内容去重（忽略图表路径）
 - [x] 离线演示按问题选剧本（调查/取数/兜底），不再"问什么都返回同一份报告"
-- [x] 删除对话：清空 run/报告/图表/Trace，只归档提问（`deleted_sessions`），输入框自动回填
+- [x] 删除对话：无报告的 run 与文件删除；有报告的 run 脱离会话保留（报告 + Trace + 提问），报告中心仍可查
 - [x] favicon：由根目录 `icon.png` 生成 128/256 两档放入 `opspilot/web/`
 - [x] 75 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
