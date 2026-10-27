@@ -1160,6 +1160,8 @@ async function openSession(sessionId, focusRunId = null) {
       const latest = runs[runs.length - 1].run_id;
       state.runId = latest;
       await showRunTrace(focusRunId || latest);
+      const interrupted = runs.filter((r) => r.status === "interrupted");
+      if (interrupted.length) addInterruptBanner(interrupted, sessionId);
     }
     $("#chat-empty")?.remove();
     scrollChat();
@@ -1172,8 +1174,7 @@ async function openSession(sessionId, focusRunId = null) {
   await loadSessions();
 }
 
-function appendRunToChat(run, events, roundIndex = 0) {
-  if (run.task) addMessage("user", esc(run.task).replace(/\n/g, "<br>"));
+function appendRunToChat(run, events, roundIndex = 0) {  if (run.task) addMessage("user", esc(run.task).replace(/\n/g, "<br>"));
   let activity = null;
   const toolResults = [];
   let sawReport = false;
@@ -1212,8 +1213,83 @@ function appendRunToChat(run, events, roundIndex = 0) {
   if (run.report && !sawReport) addReportCard(run.report, run.run_id);
 }
 
-async function openRun(runId) {
+/* 断点恢复：运行被服务重启中断后，一键继续 */
+
+function addInterruptBanner(runs, sessionId) {
+  const latest = runs[runs.length - 1];
+  const wrap = addMessage("assistant", "");
+  const bubble = wrap.querySelector(".bubble");
+  bubble.classList.add("interrupt-bubble");
+  bubble.innerHTML = `
+    <div class="interrupt-title">有 ${runs.length} 个运行因服务重启被中断</div>
+    <div class="interrupt-sub">最后中断：${esc((latest.task || "").slice(0, 90))}</div>
+    <button class="btn primary" type="button">继续运行</button>`;
+  bubble.querySelector("button").addEventListener("click", () => resumeRun(latest.run_id, sessionId));
+}
+
+async function resumeRun(runId, sessionId) {
+  if (state.streaming) return;
+  state.streaming = true;
+  $("#send").disabled = true;
+  setThinking("正在从断点继续…");
+  $("#live-dot").classList.add("on");
   try {
+    const resp = await fetch(`/api/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mock: $("#mock-toggle").checked }),
+    });
+    if (!resp.ok || !resp.body) throw new Error(await resp.text());
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        let ev;
+        try {
+          ev = JSON.parse(line.slice(6));
+        } catch {
+          continue;
+        }
+        if (ev.type === "run_started") {
+          state.runId = ev.run_id;
+          $("#trace").innerHTML = "";
+          state.traceItems.clear();
+          appendTraceNote("从断点继续运行", "info");
+        } else if (ev.type === "tool_started") {
+          addTraceItem(ev.data);
+        } else if (ev.type === "tool_finished") {
+          updateTraceItem(ev.data);
+        } else if (ev.type === "run_finished") {
+          appendTraceNote(
+            `${statusText(ev.data.status)} · ${ev.data.budget?.steps} 步 / ${ev.data.usage?.total_tokens} tokens`,
+            ev.data.status === "completed" ? "ok" : "bad"
+          );
+        }
+      }
+    }
+    showToast("已从断点继续");
+  } catch (e) {
+    console.error(e);
+    showToast("继续运行失败");
+  } finally {
+    state.streaming = false;
+    $("#send").disabled = false;
+    $("#live-dot").classList.remove("on");
+    clearThinking();
+    await openSession(sessionId, runId);
+  }
+}
+
+async function openRun(runId) {  try {
     const resp = await fetch(`/api/runs/${runId}`, { cache: "no-store" });
     if (!resp.ok) throw new Error(await resp.text());
     const { run } = await resp.json();
@@ -1290,6 +1366,7 @@ function statusText(status) {
     failed: "失败",
     paused: "已暂停",
     cancelled: "已取消",
+    interrupted: "已中断",
     budget_exceeded: "预算超限",
   }[status] || status || "";
 }

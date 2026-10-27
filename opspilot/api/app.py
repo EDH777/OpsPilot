@@ -36,6 +36,8 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.store = StateStore(settings.state_db_path)
+    # 服务重启后，上次遗留的 running 一律标记为 interrupted，前端可一键继续
+    app.state.recovered_runs = app.state.store.mark_interrupted_runs()
     yield
     app.state.store.close()
 
@@ -279,7 +281,13 @@ async def chat(req: ChatRequest):
     if not req.mock and not settings.has_llm:
         raise HTTPException(400, "未配置 OPSPILOT_LLM_API_KEY；可在界面上选择离线演示模式")
 
-    llm = mock_for(req.message) if req.mock else build_llm(settings)
+    if req.mock:
+        history = (
+            app.state.store.session_history(req.session_id, limit=3) if req.session_id else []
+        )
+        llm = mock_for(req.message, [h.get("task") or "" for h in history])
+    else:
+        llm = build_llm(settings)
     loop = AgentLoop(llm, settings=settings, state=app.state.store)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
@@ -331,7 +339,15 @@ async def resume_run(run_id: str, req: ResumeRequest):
     row = app.state.store.load(run_id)
     if not row:
         raise HTTPException(404, "run 不存在")
-    llm = mock_for(row.get("task") or "") if req.mock else build_llm(settings)
+    if req.mock:
+        history = (
+            app.state.store.session_history(row.get("session_id") or "", exclude_run_id=run_id, limit=3)
+            if row.get("session_id")
+            else []
+        )
+        llm = mock_for(row.get("task") or "", [h.get("task") or "" for h in history])
+    else:
+        llm = build_llm(settings)
     loop = AgentLoop(llm, settings=settings, state=app.state.store)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 

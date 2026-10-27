@@ -46,6 +46,11 @@ BUDGET_NUDGE = (
     "不要再为追求完美重复查询同一指标。若确有未完成项，请写进报告的 limitations。"
 )
 
+HISTORY_NOTE = (
+    "【会话历史】以下是同一会话中此前的轮次，仅用于理解指代关系（例如“那看一下 9 月份的”），"
+    "并沿用用户已经指定的车间、时间口径等约束。不要复述历史内容，也不要重复执行已完成的查询。"
+)
+
 
 @dataclass
 class RunResult:
@@ -168,16 +173,21 @@ class AgentLoop:
         emit: EventCallback | None = None,
     ) -> RunResult:
         run_id = run_id or new_id("run_")
+        session_id = session_id or new_id("sess_")
         profile = classify_task(task)
-        messages = [
-            Message(role=Role.SYSTEM, content=build_system_prompt(mode=profile.value)),
-            Message(role=Role.USER, content=task),
-        ]
+
+        messages = [Message(role=Role.SYSTEM, content=build_system_prompt(mode=profile.value))]
+        history = self._history_messages(session_id)
+        if history:
+            messages.append(Message(role=Role.SYSTEM, name="harness_history", content=HISTORY_NOTE))
+            messages.extend(history)
+        messages.append(Message(role=Role.USER, content=task))
+
         budget = self._budget_for(profile)
         context = self.context or ContextManager(token_budget=self._context_budget(profile))
         return await self._drive(
             run_id=run_id,
-            session_id=session_id or new_id("sess_"),
+            session_id=session_id,
             task=task,
             messages=messages,
             budget=budget,
@@ -187,12 +197,49 @@ class AgentLoop:
             profile=profile,
         )
 
+    def _history_messages(self, session_id: str, *, max_chars: int = 2400) -> list[Message]:
+        """把同一会话此前轮次的「提问 + 结论摘要」拼回上下文，控制总量。"""
+        try:
+            rows = self.state.session_history(session_id, limit=4)
+        except Exception:  # noqa: BLE001 - 历史不可用不应阻断新任务
+            return []
+
+        pairs: list[tuple[str, str]] = []
+        for row in rows:
+            task = (row.get("task") or "").strip()
+            if not task:
+                continue
+            summary = ((row.get("report") or {}).get("summary") or row.get("answer") or "").strip()
+            pairs.append((task[:400], summary[:600]))
+
+        selected: list[tuple[str, str]] = []
+        used = 0
+        for task_text, summary_text in reversed(pairs):
+            cost = len(task_text) + len(summary_text)
+            if selected and used + cost > max_chars:
+                break
+            selected.append((task_text, summary_text))
+            used += cost
+
+        messages: list[Message] = []
+        for task_text, summary_text in reversed(selected):
+            messages.append(Message(role=Role.USER, content=task_text))
+            messages.append(Message(role=Role.ASSISTANT, content=summary_text or "（本轮已完成，无文字结论）"))
+        return messages
+
     async def resume(self, run_id: str, *, emit: EventCallback | None = None) -> RunResult:
         row = self.state.load(run_id)
         if not row:
             raise ValueError(f"找不到运行记录 {run_id}")
-        if row.get("status") not in {RunStatus.RUNNING.value, RunStatus.PAUSED.value, RunStatus.FAILED.value}:
+        if row.get("status") not in {
+            RunStatus.RUNNING.value,
+            RunStatus.PAUSED.value,
+            RunStatus.FAILED.value,
+            RunStatus.INTERRUPTED.value,
+        }:
             raise ValueError(f"运行 {run_id} 状态为 {row.get('status')}，不可续跑")
+
+        self.state.bump_resume(run_id)
 
         messages = [Message.from_dict(m) for m in (row.get("messages") or [])]
         usage_data = row.get("usage") or {}

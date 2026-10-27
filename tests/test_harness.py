@@ -313,6 +313,64 @@ def test_state_archive_session_keeps_report_runs(tmp_path: Path):
     store.close()
 
 
+def test_schema_migration_from_legacy_db(tmp_path: Path):
+    import sqlite3
+
+    db = tmp_path / "legacy.sqlite3"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE runs (run_id TEXT PRIMARY KEY, session_id TEXT, task TEXT, title TEXT, "
+        "status TEXT, step INTEGER, messages TEXT, usage TEXT, answer TEXT, report TEXT, "
+        "error TEXT, created_at REAL, updated_at REAL)"
+    )
+    con.execute("INSERT INTO runs (run_id, task, status) VALUES ('old', '老任务', 'completed')")
+    con.commit()
+    con.close()
+
+    store = StateStore(db)
+    assert store.schema_version == 2
+    columns = {r[1] for r in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "resume_count" in columns
+    assert store.load("old")["task"] == "老任务"
+    store.close()
+
+
+def test_mark_interrupted_runs(tmp_path: Path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.save("r1", session_id="s1", task="跑一半", status="running")
+    store.save("r2", session_id="s1", task="已结束", status="completed")
+
+    assert store.mark_interrupted_runs() == 1
+    assert store.load("r1")["status"] == "interrupted"
+    assert store.load("r2")["status"] == "completed"
+    assert store.mark_interrupted_runs() == 0
+    store.close()
+
+
+def test_session_history_returns_finished_turns(tmp_path: Path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.save("r1", session_id="s1", task="第一问", status="completed", answer="第一答")
+    store.save(
+        "r2",
+        session_id="s1",
+        task="第二问",
+        status="completed",
+        report={"title": "T", "summary": "第二轮的结论"},
+    )
+    store.save("r3", session_id="s1", task="进行中", status="running")
+    store.save("r4", session_id="s2", task="别的会话", status="completed", answer="x")
+
+    history = store.session_history("s1")
+    tasks = [item["task"] for item in history]
+    assert tasks == ["第一问", "第二问"]
+    assert history[0]["answer"] == "第一答"
+    assert history[1]["report"]["summary"] == "第二轮的结论"
+
+    excluded = store.session_history("s1", exclude_run_id="r2")
+    assert [item["task"] for item in excluded] == ["第一问"]
+    store.close()
+
+
 def test_tracer_writes_and_reloads(tmp_path: Path):
     tracer = Tracer("run_x", tmp_path)
     tracer.emit(Event(seq=1, type="run_started", run_id="run_x", data={"task": "t"}))

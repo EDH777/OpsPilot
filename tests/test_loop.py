@@ -141,3 +141,47 @@ async def test_resume_rejects_finished_run(settings, state_store, registry):
     loop = _loop([], settings, state_store, registry)
     with pytest.raises(ValueError):
         await loop.resume("run_done")
+
+
+async def test_second_run_inherits_session_history(settings, state_store, registry):
+    captured: list[list[Message]] = []
+
+    def capture(messages, tools):
+        captured.append(list(messages))
+        return assistant(content="收到")
+
+    loop = AgentLoop(
+        ScriptedLLM([capture, capture]), settings=settings, state=state_store, registry=registry
+    )
+    await loop.run("看一下二号车间这个月的用电情况", session_id="sess_ctx")
+    await loop.run("那看一下9月份的", session_id="sess_ctx")
+
+    second = captured[1]
+    texts = [m.content or "" for m in second]
+    assert any("看一下二号车间这个月的用电情况" in t for t in texts), "第二轮应带上第一轮提问"
+    assert any(t == "收到" for t in texts), "第二轮应带上第一轮结论"
+    assert any(m.name == "harness_history" for m in second), "应插入会话历史说明"
+
+
+async def test_resume_interrupted_run_increments_count(settings, tmp_path, registry):
+    store = StateStore(tmp_path / "interrupted.sqlite3")
+    messages = [Message(role=Role.SYSTEM, content="s"), Message(role=Role.USER, content="继续调查")]
+    store.save(
+        "run_int",
+        session_id="s1",
+        task="继续调查",
+        status="interrupted",
+        step=1,
+        messages=[m.to_dict() for m in messages],
+        usage={"total_tokens": 100, "prompt_tokens": 60, "completion_tokens": 40, "llm_calls": 1},
+    )
+    loop = AgentLoop(
+        ScriptedLLM([assistant(content="已继续完成")]), settings=settings, state=store, registry=registry
+    )
+    result = await loop.resume("run_int")
+
+    assert result.status is RunStatus.COMPLETED
+    row = store.load("run_int")
+    assert row["status"] == "completed"
+    assert row["resume_count"] == 1
+    store.close()

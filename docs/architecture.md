@@ -153,6 +153,15 @@ sequenceDiagram
 点开时按 `created_at` 顺序取出该 session 的全部 run 并重放各自的事件流；
 新增提问沿用当前 `session_id`，因此不会每问一句就多出一个"对话"。
 
+跨轮上下文：`AgentLoop.run()` 在构造 messages 时会读取同一 session 最近 4 个已结束轮次的
+「提问 + 结论摘要」（`session_history`，总量 2400 字符），插入一条 `harness_history` 系统说明，
+从而让"那看一下 9 月份的"这类省略追问能沿用车间/口径；历史只进上下文，不改写旧报告。
+
+断点恢复：`StateStore` 维护 `schema_meta.version`（当前 2），启动时自动补列；
+FastAPI lifespan 调用 `mark_interrupted_runs()` 把上次进程遗留的 `running` 改成 `interrupted`。
+会话页对 interrupted 的 run 显示「继续运行」，`POST /api/runs/{id}/resume` 从最后一条消息续跑，
+`resume_count` 记录恢复次数。
+
 删除会话时：没有报告的 run 连同 `runs/<run_id>/` 目录一起删除；
 有报告的 run 置 `session_id=NULL`、清空 messages/answer，但保留 report、task（提问）与 Trace/产物，
 因此对话消失、报告仍在报告中心可查。

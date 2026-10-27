@@ -83,3 +83,15 @@ async def test_offline_mock_investigation_produces_report(settings, state_store,
     assert result.status is RunStatus.COMPLETED
     assert result.report is not None
     assert "三号车间" in result.report["title"]
+
+
+async def test_offline_mock_followup_resolves_workshop_from_history(settings, state_store, registry):
+    task = "那看一下9月份的"
+    history = ["看一下二号车间这个月的用电情况"]
+    loop = AgentLoop(
+        mock_for(task, history), settings=settings, state=state_store, registry=registry
+    )
+    result = await loop.run(task, session_id="sess_mock_ctx")
+    assert result.status is RunStatus.COMPLETED
+    assert "二号车间" in (result.answer or "")
+    assert "2026年9月" in (result.answer or "")

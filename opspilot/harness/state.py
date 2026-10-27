@@ -13,7 +13,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+_SCHEMA_VERSION = 2
+
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (
     run_id      TEXT PRIMARY KEY,
     session_id  TEXT,
@@ -26,6 +32,7 @@ CREATE TABLE IF NOT EXISTS runs (
     answer      TEXT,
     report      TEXT,
     error       TEXT,
+    resume_count INTEGER DEFAULT 0,
     created_at  REAL,
     updated_at  REAL
 );
@@ -44,7 +51,36 @@ class StateStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    # ------------------------------------------------------------------ 迁移
+
+    def _migrate(self) -> None:
+        """轻量迁移：老库没有 schema_meta / 新列时自动补齐，不需要手工操作。"""
+        row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()
+        current = int(row[0]) if row else 0
+
+        if current < 1:
+            # 基础表由 _SCHEMA 的 IF NOT EXISTS 保证
+            current = 1
+
+        if current < 2:
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "resume_count" not in columns:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN resume_count INTEGER DEFAULT 0")
+            current = 2
+
+        self._conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES ('version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(min(current, _SCHEMA_VERSION)),),
+        )
+
+    @property
+    def schema_version(self) -> int:
+        row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'version'").fetchone()
+        return int(row[0]) if row else 0
 
     def close(self) -> None:
         self._conn.close()
@@ -147,6 +183,49 @@ class StateStore:
                 (limit,),
             ).fetchall()
         return [self._decode(dict(r)) for r in rows]
+
+    def mark_interrupted_runs(self) -> int:
+        """服务启动时调用：把上次进程遗留的 running 标记为 interrupted（可续跑）。"""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE runs SET status = 'interrupted', "
+                "error = COALESCE(NULLIF(error, ''), '服务重启导致运行中断，可继续运行') "
+                "WHERE status = 'running'"
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def bump_resume(self, run_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE runs SET resume_count = COALESCE(resume_count, 0) + 1 WHERE run_id = ?",
+                (run_id,),
+            )
+            self._conn.commit()
+
+    def session_history(
+        self,
+        session_id: str,
+        *,
+        exclude_run_id: str | None = None,
+        limit: int = 4,
+    ) -> list[dict[str, Any]]:
+        """取同一会话已结束的轮次，供新 run 继承指代与约束。"""
+        sql = (
+            "SELECT run_id, task, answer, report, status, created_at FROM runs "
+            "WHERE session_id = ? AND status IN ('completed', 'failed')"
+        )
+        params: list[Any] = [session_id]
+        if exclude_run_id:
+            sql += " AND run_id != ?"
+            params.append(exclude_run_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        out = [self._decode(dict(r)) for r in rows]
+        out.reverse()
+        return out
 
     def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         """会话维度：一个 session 下可能有多轮 run，侧栏应按会话展示。"""

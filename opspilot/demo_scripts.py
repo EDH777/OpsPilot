@@ -217,8 +217,8 @@ def _parse_month(task: str) -> tuple[int, int]:
     return today.year, today.month
 
 
-def _electricity_summary(task: str) -> ScriptedLLM:
-    workshop_id = _parse_workshop(task) or "WS-03"
+def _electricity_summary(task: str, fallback_task: str | None = None) -> ScriptedLLM:
+    workshop_id = _parse_workshop(task) or _parse_workshop(fallback_task or "") or "WS-03"
     workshop_name = _WORKSHOP_NAMES.get(workshop_id, workshop_id)
     year, month = _parse_month(task)
     start = date(year, month, 1)
@@ -265,15 +265,26 @@ def _electricity_summary(task: str) -> ScriptedLLM:
     )
 
 
-def mock_for(task: str) -> ScriptedLLM:
-    """离线演示按问题选剧本；避免"问什么都返回同一份报告"。"""
+def mock_for(task: str, history_tasks: list[str] | None = None) -> ScriptedLLM:
+    """离线演示按问题选剧本；避免"问什么都返回同一份报告"。
+
+    history_tasks 为同一会话此前的提问（旧→新），用于解析"那看一下9月份的"这类省略指代。
+    """
     text = task or ""
+    history = [t for t in (history_tasks or []) if t]
+    fallback = next((t for t in reversed(history) if _parse_workshop(t)), "")
+
     if any(k in text for k in ("三号车间", "WS-03", "WS03")) and any(
         k in text for k in ("电耗", "空转", "原因", "为什么", "调查")
     ):
         return mock_investigation()
-    if _parse_workshop(text) and any(k in text for k in ("用电", "电耗", "能耗", "电量")):
-        return _electricity_summary(text)
+
+    electricity_context = any(k in text for k in ("用电", "电耗", "能耗", "电量")) or (
+        fallback and any(k in fallback for k in ("用电", "电耗", "能耗", "电量"))
+    )
+    if electricity_context and (_parse_workshop(text) or fallback):
+        return _electricity_summary(text, fallback)
+
     return ScriptedLLM(
         [
             assistant(
