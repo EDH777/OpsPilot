@@ -26,7 +26,10 @@ const state = {
   dashboardStream: null,
   budget: null,
   traceItems: new Map(),
-  stepBubbles: new Map(),
+  activityBubble: null,
+  runToolNames: [],
+  runToolResults: [],
+  viewingRunId: null,
 };
 
 document.addEventListener("DOMContentLoaded", init);
@@ -43,6 +46,9 @@ async function init() {
   $("#refresh-dashboard").addEventListener("click", async () => {
     await loadDashboard();
     showToast("已刷新至最新数据");
+  });
+  $("#back-to-live").addEventListener("click", () => {
+    if (state.runId) showRunTrace(state.runId);
   });
   await checkHealth();
   await Promise.all([loadRuns(), loadReports()]);
@@ -424,13 +430,17 @@ function resetWorkbench() {
   state.sessionId = null;
   state.runId = null;
   state.report = null;
+  state.viewingRunId = null;
+  state.activityBubble = null;
+  state.runToolNames = [];
+  state.runToolResults = [];
   state.traceItems.clear();
-  state.stepBubbles.clear();
   $("#messages").innerHTML = "";
   $("#trace").innerHTML = `<div class="trace-empty">每一步模型决策、工具调用、错误与重试都会出现在这里。</div>`;
   $("#trace-meta").textContent = "尚未开始";
   $("#budget").innerHTML = "";
   $("#live-dot").classList.remove("on");
+  $("#back-to-live").hidden = true;
 }
 
 function addMessage(role, html) {
@@ -447,11 +457,79 @@ function addMessage(role, html) {
   return wrap;
 }
 
-function addActivityBubble(step) {
-  if (state.stepBubbles.has(step)) return state.stepBubbles.get(step);
+/* 一次运行一个聚合气泡：直播与回放外观一致，点击可查看该次轨迹 */
+
+function createActivityBubble(runId) {
   const wrap = addMessage("assistant", "");
-  state.stepBubbles.set(step, wrap.querySelector(".bubble"));
-  return wrap.querySelector(".bubble");
+  const bubble = wrap.querySelector(".bubble");
+  bubble.classList.add("activity-bubble");
+  bubble.dataset.runId = runId || "";
+  bubble.innerHTML = `<div class="activity-caption">工具调用 <b class="ac-count">0</b> 次</div>`;
+  return bubble;
+}
+
+function ensureActivityBubble() {
+  if (state.activityBubble && document.body.contains(state.activityBubble)) return state.activityBubble;
+  state.activityBubble = createActivityBubble(state.runId);
+  return state.activityBubble;
+}
+
+function appendChip(bubble, callId, name) {
+  const chip = document.createElement("span");
+  chip.className = "tool-chip";
+  chip.dataset.call = callId;
+  chip.dataset.name = name;
+  chip.innerHTML = `<span class="dot"></span>${esc(name)}`;
+  bubble.appendChild(chip);
+  const counter = bubble.querySelector(".ac-count");
+  if (counter) counter.textContent = String(state.runToolNames.length);
+  scrollChat();
+}
+
+function renderActivityChips(bubble, results, runId) {
+  if (!bubble) return;
+  bubble.querySelectorAll(".tool-chip").forEach((c) => c.remove());
+  const groups = [];
+  results.forEach((r) => {
+    const last = groups[groups.length - 1];
+    if (last && last.name === r.name) {
+      last.count += 1;
+      last.ok = last.ok && r.ok;
+    } else {
+      groups.push({ name: r.name, count: 1, ok: r.ok });
+    }
+  });
+  const caption = bubble.querySelector(".activity-caption");
+  if (caption) caption.innerHTML = `本次运行调用工具 <b>${results.length}</b> 次`;
+  groups.forEach((g) => {
+    const chip = document.createElement("span");
+    chip.className = `tool-chip ${g.ok ? "ok" : "fail"}`;
+    chip.dataset.name = g.name;
+    chip.innerHTML = `<span class="dot"></span>${esc(g.name)}${g.count > 1 ? ` ×${g.count}` : ""}`;
+    bubble.appendChild(chip);
+  });
+  addActivityFooter(bubble, runId);
+}
+
+function addActivityFooter(bubble, runId) {
+  if (!runId || bubble.querySelector(".activity-footer")) return;
+  const footer = document.createElement("div");
+  footer.className = "activity-footer";
+  footer.innerHTML = `<button class="link-btn">查看本次执行轨迹</button><span class="af-run">${esc(runId.slice(4, 12))}</span>`;
+  footer.querySelector("button").addEventListener("click", () => showRunTrace(runId));
+  bubble.appendChild(footer);
+}
+
+function finalizeActivity() {
+  const bubble = state.activityBubble;
+  if (!bubble) return;
+  renderActivityChips(bubble, state.runToolResults, state.runId);
+}
+
+function markActiveActivity(runId) {
+  document.querySelectorAll(".activity-bubble").forEach((b) => {
+    b.classList.toggle("trace-active", b.dataset.runId === runId);
+  });
 }
 
 function scrollChat() {
@@ -537,12 +615,17 @@ function handleEvent(ev) {
       state.runId = ev.run_id;
       state.sessionId = d.session_id;
       state.budget = d.budget;
+      state.viewingRunId = ev.run_id;
+      state.activityBubble = null;
+      state.runToolNames = [];
+      state.runToolResults = [];
       $("#trace").innerHTML = "";
       state.traceItems.clear();
-      state.stepBubbles.clear();
-      $("#trace-meta").textContent = `run ${ev.run_id.slice(4, 12)} · ${d.model}`;
-      appendTraceNote(`开始调查 · ${d.tools.length} 个工具可用`, "info");
+      $("#trace-meta").textContent = `run ${ev.run_id.slice(4, 12)} · ${d.profile_label || d.model} · 进行中`;
+      appendTraceNote(`开始运行 · ${d.profile_label || "异常调查"} · ${d.tools.length} 个工具可用`, "info");
       renderBudget(d.budget, null);
+      $("#back-to-live").hidden = true;
+      $("#live-dot").classList.add("on");
       setThinking("正在理解问题…");
       break;
     }
@@ -555,7 +638,7 @@ function handleEvent(ev) {
         addMessage("assistant", md(d.content));
       }
       if (d.tool_calls && d.tool_calls.length) {
-        addActivityBubble(d.step);
+        ensureActivityBubble();
       }
       if (d.finish_reason === "length") {
         appendTraceNote("模型输出被 max_tokens 截断，参数可能不完整", "warn");
@@ -565,21 +648,19 @@ function handleEvent(ev) {
     case "assistant_message":
       break;
     case "tool_started": {
-      const bubble = ensureActivityBubble();
-      const chip = document.createElement("span");
-      chip.className = "tool-chip";
-      chip.dataset.call = d.call_id;
-      chip.innerHTML = `<span class="dot"></span>${esc(d.name)}`;
-      bubble.appendChild(chip);
+      state.runToolNames.push(d.name);
+      appendChip(ensureActivityBubble(), d.call_id, d.name);
       addTraceItem(d);
       break;
     }
     case "tool_finished": {
+      state.runToolResults.push({ name: d.name, ok: d.ok });
       const chip = $(`.tool-chip[data-call="${cssEscape(d.call_id)}"]`);
       if (chip) chip.classList.add(d.ok ? "ok" : "fail");
       updateTraceItem(d);
       if (d.ok && d.artifacts && d.artifacts.length) {
-        appendArtifacts(ensureActivityBubble(), d.artifacts, "本次生成的图表");
+        const wrap = addMessage("assistant", "");
+        appendArtifacts(wrap.querySelector(".bubble"), d.artifacts, "本次生成的图表");
       }
       break;
     }
@@ -616,6 +697,11 @@ function handleEvent(ev) {
       break;
     case "run_finished": {
       clearThinking();
+      finalizeActivity();
+      state.viewingRunId = state.runId;
+      $("#trace-meta").textContent = `run ${(state.runId || "").slice(4, 12)} · 最新运行`;
+      $("#back-to-live").hidden = true;
+      markActiveActivity(state.runId);
       renderBudget(d.budget, d.usage);
       const ok = d.status === "completed";
       appendTraceNote(
@@ -628,21 +714,6 @@ function handleEvent(ev) {
     default:
       break;
   }
-}
-
-function ensureActivityBubble() {
-  const keys = Array.from(state.stepBubbles.keys());
-  if (keys.length) return state.stepBubbles.get(keys[keys.length - 1]);
-  const last = $("#messages").lastElementChild;
-  if (last && last.classList.contains("msg") && last.classList.contains("assistant")) {
-    const bubble = last.querySelector(".bubble");
-    state.stepBubbles.set("last", bubble);
-    return bubble;
-  }
-  const wrap = addMessage("assistant", "");
-  const bubble = wrap.querySelector(".bubble");
-  state.stepBubbles.set("last", bubble);
-  return bubble;
 }
 
 /* ------------------------------------------------------------------ 产物图表 */
@@ -798,6 +869,88 @@ function renderBudget(budget, usage) {
     .join("");
 }
 
+/* ------------------------------------------------------------------ 历史轨迹 */
+
+async function showRunTrace(runId) {
+  if (!runId) return;
+  let events = [];
+  try {
+    const r = await fetch(`/api/runs/${runId}/events`, { cache: "no-store" });
+    if (!r.ok) throw new Error(await r.text());
+    events = (await r.json()).events || [];
+  } catch (e) {
+    showToast("该次运行的轨迹加载失败");
+    return;
+  }
+
+  state.viewingRunId = runId;
+  $("#trace").innerHTML = "";
+  state.traceItems.clear();
+  let finished = null;
+
+  for (const ev of events) {
+    const d = ev.data || {};
+    switch (ev.type) {
+      case "run_started":
+        appendTraceNote(`开始运行 · ${d.profile_label || "异常调查"}`, "info");
+        break;
+      case "tool_started": {
+        addTraceItem(d);
+        const item = state.traceItems.get(d.call_id);
+        if (item) item.classList.remove("running");
+        break;
+      }
+      case "tool_finished":
+        updateTraceItem(d);
+        break;
+      case "arg_repaired":
+        appendNoteToTrace(d.call_id, `Harness 自动修复参数：${(d.repairs || []).join("；")}`);
+        break;
+      case "tool_retry":
+        appendNoteToTrace(d.call_id, `第 ${d.attempt} 次重试（${d.kind}）`, "warn");
+        break;
+      case "loop_guard":
+        appendTraceNote(`熔断：${d.name} 连续失败，已提示模型换路径`, "warn");
+        break;
+      case "budget_warning":
+        appendTraceNote(d.message, "warn");
+        break;
+      case "budget_exceeded":
+        appendTraceNote(`预算超限：${d.message}`, "bad");
+        break;
+      case "error":
+        appendTraceNote(`错误：${d.message}`, "bad");
+        break;
+      case "context_compacted":
+        if (d.compacted) appendTraceNote(`上下文压缩：省略 ${d.dropped_messages} 条早期消息`, "info");
+        break;
+      case "run_finished":
+        finished = d;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (finished) {
+    renderBudget(finished.budget, finished.usage);
+    appendTraceNote(
+      `${statusText(finished.status)} · ${finished.budget?.steps} 步 / ${finished.usage?.total_tokens} tokens / ${((finished.duration_ms || 0) / 1000).toFixed(1)}s`,
+      finished.status === "completed" ? "ok" : "bad"
+    );
+  } else {
+    $("#budget").innerHTML = "";
+    appendTraceNote("该运行没有结束事件（可能被中断）", "warn");
+  }
+
+  const isLatest = runId === state.runId;
+  $("#trace-meta").textContent = `run ${runId.slice(4, 12)} · ${isLatest ? "最新运行" : "历史运行"}`;
+  $("#back-to-live").hidden = isLatest || !state.runId;
+  $("#live-dot").classList.toggle("on", isLatest && state.streaming);
+  $("#trace").scrollTop = 0;
+  markActiveActivity(runId);
+}
+
 /* ------------------------------------------------------------------ 报告 */
 
 function addReportCard(report) {
@@ -908,26 +1061,15 @@ async function openRun(runId) {
     const task = run.task || "";
     if (task) addMessage("user", esc(task));
 
-    const toolNames = evResp.events
+    const toolResults = evResp.events
       .filter((e) => e.type === "tool_finished")
-      .map((e) => e.data.name);
-    if (toolNames.length) {
-      const wrap = addMessage("assistant", "");
-      const bubble = wrap.querySelector(".bubble");
-      const groups = [];
-      for (const n of toolNames) {
-        const last = groups[groups.length - 1];
-        if (last && last.name === n) last.count += 1;
-        else groups.push({ name: n, count: 1 });
-      }
-      bubble.innerHTML =
-        `<div class="activity-caption">本次调查执行了 ${toolNames.length} 次工具调用</div>` +
-        groups
-          .map(
-            (g) =>
-              `<span class="tool-chip ok"><span class="dot"></span>${esc(g.name)}${g.count > 1 ? ` ×${g.count}` : ""}</span>`
-          )
-          .join("");
+      .map((e) => ({ name: e.data.name, ok: Boolean(e.data.ok) }));
+    if (toolResults.length) {
+      const bubble = createActivityBubble(runId);
+      renderActivityChips(bubble, toolResults, runId);
+      state.activityBubble = bubble;
+      state.runToolResults = toolResults;
+      state.runToolNames = toolResults.map((r) => r.name);
     }
 
     const produced = evResp.events

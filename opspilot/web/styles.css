@@ -315,6 +315,7 @@ button { font: inherit; cursor: pointer; }
   border-bottom: 1px solid var(--line); background: #fff;
 }
 .trace-head strong { font-size: 13px; }
+.trace-head-actions { display: flex; align-items: center; gap: 8px; }
 .trace-meta { font-size: 11px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
 .live-dot.on { background: var(--accent); box-shadow: 0 0 0 4px rgba(234, 88, 12, .13); animation: blink 1.2s infinite; }
@@ -346,6 +347,17 @@ button { font: inherit; cursor: pointer; }
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .activity-caption { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+.activity-bubble.trace-active { border-color: #fdba74; box-shadow: 0 0 0 2px rgba(234, 88, 12, .08); }
+.activity-footer {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  padding-top: 8px; border-top: 1px dashed var(--line-2);
+}
+.link-btn {
+  border: 0; background: transparent; padding: 0; color: var(--accent);
+  font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; }
+.activity-footer .af-run { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .ti-note { font-size: 11px; color: var(--warn); margin-top: 4px; }
 .ti-note.bad { color: var(--bad); }
 .ti-detail { margin-top: 5px; }

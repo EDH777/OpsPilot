@@ -139,7 +139,10 @@
               <strong>执行轨迹</strong>
               <div class="trace-meta" id="trace-meta">尚未开始</div>
             </div>
-            <span class="live-dot" id="live-dot"></span>
+            <div class="trace-head-actions">
+              <button class="btn ghost icon" id="back-to-live" title="返回最新运行" hidden>⟲</button>
+              <span class="live-dot" id="live-dot"></span>
+            </div>
           </div>
           <div class="trace-body" id="trace">
             <div class="trace-empty">每一步模型决策、工具调用、错误与重试都会出现在这里。</div>
