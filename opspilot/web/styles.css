@@ -131,11 +131,6 @@ button { font: inherit; cursor: pointer; }
   0% { background: #fff3e6; border-color: #fdba74; transform: translateY(-1px); }
   100% { background: #fff; border-color: var(--line); transform: none; }
 }
-.kpi.highlight.flash { animation-name: kpiFlashHighlight; }
-@keyframes kpiFlashHighlight {
-  0% { background: #ffedd5; border-color: #fdba74; transform: translateY(-1px); }
-  100% { background: linear-gradient(180deg, #fffbf7, #fff); border-color: #fed7aa; }
-}
 
 /* 轻提示 */
 .toast {
@@ -177,7 +172,16 @@ button { font: inherit; cursor: pointer; }
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 15px 16px 14px; box-shadow: var(--shadow); position: relative; overflow: hidden;
 }
-.kpi.highlight { border-color: #fed7aa; background: linear-gradient(180deg, #fffbf7, #fff); }
+.kpi.highlight { background: var(--panel); border-color: var(--line); }
+/* 强调用"顶部色条 + 标签"，不用整块底色，避免和"选中态"混淆 */
+.kpi.highlight::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  background: linear-gradient(90deg, #fdba74, #ea580c);
+}
+.kpi-tag {
+  font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 4px;
+  background: var(--accent-soft); color: var(--accent-ink); border: 1px solid #fed7aa;
+}
 .kpi-label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .kpi-value { font-size: 26px; font-weight: 680; letter-spacing: -.4px; margin-top: 8px; font-variant-numeric: tabular-nums; }
 .kpi-unit { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 4px; }
@@ -201,7 +205,8 @@ button { font: inherit; cursor: pointer; }
   transition: border-color .15s, background .15s;
 }
 .anomaly:hover { border-color: #fed7aa; background: var(--accent-soft); }
-.anomaly.warn { background: #fffdf7; border-color: #f3ddb5; }
+/* 数据质量提示：左侧色条 + 徽章表达"注意"，不用整块底色 */
+.anomaly.warn { background: #fff; border-color: var(--line-2); box-shadow: inset 3px 0 0 #f0b357; }
 .anomaly.warn:hover { border-color: #f3ddb5; background: #fffdf7; }
 .anomaly .a-main { flex: 1; min-width: 0; }
 .anomaly .a-title { font-size: 13px; font-weight: 600; }

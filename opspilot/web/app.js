@@ -192,7 +192,7 @@ function deltaHtml(k) {
 
 function kpiCardHtml(k) {
   return `<div class="kpi ${k.highlight ? "highlight" : ""}" data-kpi="${esc(k.key)}">
-    <div class="kpi-label">${esc(k.label)}</div>
+    <div class="kpi-label">${esc(k.label)}${k.highlight ? '<span class="kpi-tag">核心</span>' : ""}</div>
     <div class="kpi-value"><span class="kv"></span><span class="kpi-unit"></span></div>
     <div class="kpi-delta" data-role="delta"></div>
   </div>`;
