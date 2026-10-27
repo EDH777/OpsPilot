@@ -198,6 +198,31 @@ async def main() -> None:
             OUT.write_bytes(base64.b64decode(data))
             print("截图:", OUT, OUT.stat().st_size, "bytes")
 
+            # 删除当前对话：文件与报告移除，但提问保留
+            sid = await js(ws, counter, "document.querySelector('.session-item.active').dataset.session")
+            await js(ws, counter, "window.confirm = () => true")
+            await js(ws, counter, "document.querySelector('.session-item.active .session-del').click()")
+            await asyncio.sleep(2.0)
+            after_delete = json.loads(
+                await js(
+                    ws,
+                    counter,
+                    "JSON.stringify({input: document.querySelector('#input').value,"
+                    " stillExists: !!document.querySelector('.session-item[data-session=\"' + %s + '\"]'),"
+                    " active: document.querySelectorAll('.session-item.active').length,"
+                    " deletedCount: document.querySelector('#deleted-count').textContent,"
+                    " users: document.querySelectorAll('.msg.user').length})" % json.dumps(sid),
+                )
+            )
+            print("删除后:", after_delete)
+            assert not after_delete["stillExists"], "会话仍留在侧栏"
+            assert after_delete["users"] == 0, "删除后聊天区应清空"
+            assert "二号车间" in after_delete["input"], "应保留并回填最后一句提问"
+            assert int(after_delete["deletedCount"]) >= 1, "已删除提问未归档"
+
+            shot2 = await cdp(ws, counter, "Page.captureScreenshot", {"format": "png"})
+            (OUT.parent / "e2e_deleted.png").write_bytes(base64.b64decode(shot2["result"]["data"]))
+
             # 断言
             assert first["bubbles"] == 1 and second["bubbles"] == 2, "气泡未按运行聚合"
             assert all(c >= 1 for c in second["chips"]), "气泡内没有工具 chip"

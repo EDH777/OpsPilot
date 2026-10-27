@@ -170,3 +170,45 @@ def test_sessions_group_multiple_runs(client):
 
 def test_session_detail_404(client):
     assert client.get("/api/sessions/sess_not_exists").status_code == 404
+
+
+def test_delete_session_removes_files_and_reports(client):
+    sid, events = _run_once(client, "三号车间单位产品电耗为什么升高？")
+    runs = client.get(f"/api/sessions/{sid}").json()["runs"]
+    assert runs
+    run_ids = [r["run_id"] for r in runs]
+    report_ids = {
+        rid for rep in client.get("/api/reports").json()["reports"] for rid in rep.get("run_ids", [])
+    }
+    assert set(run_ids) & report_ids, "调查 run 应产生报告"
+
+    from opspilot.config import get_settings
+
+    run_dir = get_settings().runs_dir / run_ids[0]
+    assert run_dir.exists()
+
+    resp = client.delete(f"/api/sessions/{sid}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted"] is True
+    assert body["run_count"] >= 1
+    assert body["queries"][0] == "三号车间单位产品电耗为什么升高？"
+
+    assert client.get(f"/api/sessions/{sid}").status_code == 404
+    assert not run_dir.exists(), "Trace 与产物目录应被删除"
+
+    remaining = {
+        rid for rep in client.get("/api/reports").json()["reports"] for rid in rep.get("run_ids", [])
+    }
+    assert not (set(run_ids) & remaining), "报告应随对话一起删除"
+
+    archived = client.get("/api/deleted-sessions").json()["sessions"]
+    assert any(item["session_id"] == sid for item in archived)
+    assert client.delete("/api/sessions/sess_not_exists").status_code == 404
+
+
+def test_favicon_assets(client):
+    for path in ("/static/icon-128.png", "/static/icon-256.png"):
+        r = client.get(path)
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/png")

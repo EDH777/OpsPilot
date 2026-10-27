@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpsPilot · 工业数据调查平台</title>
+  <link rel="icon" type="image/png" sizes="128x128" href="/static/icon-128.png" />
+  <link rel="icon" type="image/png" sizes="256x256" href="/static/icon-256.png" />
+  <link rel="apple-touch-icon" href="/static/icon-256.png" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -24,11 +27,16 @@
     </nav>
 
     <div class="side-section">
-      <div class="side-title">最近调查</div>
+      <div class="side-title">最近对话</div>
       <div id="session-list" class="session-list">
         <div class="side-empty">暂无记录</div>
       </div>
     </div>
+
+    <details class="deleted-box" id="deleted-box">
+      <summary>已删除的提问 <span id="deleted-count">0</span></summary>
+      <div id="deleted-list" class="deleted-list"></div>
+    </details>
 
     <div class="side-footer">
       <span class="status-dot" id="status-dot"></span>

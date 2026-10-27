@@ -282,6 +282,28 @@ def test_state_store_roundtrip(tmp_path: Path):
     store.close()
 
 
+def test_state_delete_session_archives_queries(tmp_path: Path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.save("r1", session_id="s1", task="第一问", status="completed")
+    store.save("r2", session_id="s1", task="第二问", status="completed")
+    store.save("r3", session_id="s2", task="别的会话", status="completed")
+
+    result = store.delete_session("s1")
+    assert result is not None
+    assert result["run_count"] == 2
+    assert set(result["queries"]) == {"第一问", "第二问"}
+    assert store.session_runs("s1") == []
+    assert len(store.session_runs("s2")) == 1
+
+    deleted = store.list_deleted_sessions()
+    assert deleted[0]["session_id"] == "s1"
+    assert deleted[0]["run_count"] == 2
+    assert set(deleted[0]["queries"]) == {"第一问", "第二问"}
+
+    assert store.delete_session("s1") is None  # 已删除
+    store.close()
+
+
 def test_tracer_writes_and_reloads(tmp_path: Path):
     tracer = Tracer("run_x", tmp_path)
     tracer.emit(Event(seq=1, type="run_started", run_id="run_x", data={"task": "t"}))

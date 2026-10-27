@@ -54,7 +54,7 @@ async function init() {
     if (state.runId) showRunTrace(state.runId);
   });
   await checkHealth();
-  await Promise.all([loadSessions(), loadReports()]);
+  await Promise.all([loadSessions(), loadReports(), loadDeleted()]);
   if (state.staticMode) {
     // 截图/打印模式：不开长连接，只取一次快照
     await loadDashboard();
@@ -1081,14 +1081,87 @@ async function loadSessions() {
     }
     el.innerHTML = sessions
       .map(
-        (s) => `<button class="session-item ${s.session_id === state.sessionId ? "active" : ""}" data-session="${esc(s.session_id)}">
-          <span class="si-title">${esc(s.title || "未命名对话")}</span>
-          <span class="st"><span>${s.runs} 轮</span>·<span>${relTime(s.last_at)}</span></span>
-        </button>`
+        (s) => `<div class="session-item ${s.session_id === state.sessionId ? "active" : ""}" data-session="${esc(s.session_id)}">
+          <div class="si-main">
+            <span class="si-title">${esc(s.title || "未命名对话")}</span>
+            <span class="st"><span>${s.runs} 轮</span>·<span>${relTime(s.last_at)}</span></span>
+          </div>
+          <button class="session-del" data-del="${esc(s.session_id)}" title="删除对话（保留提问）">✕</button>
+        </div>`
       )
       .join("");
-    $$(".session-item", el).forEach((btn) =>
-      btn.addEventListener("click", () => openSession(btn.dataset.session))
+    $$(".session-item", el).forEach((item) => {
+      item.addEventListener("click", (e) => {
+        if (e.target.closest(".session-del")) return;
+        openSession(item.dataset.session);
+      });
+    });
+    $$(".session-del", el).forEach((btn) =>
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteSession(btn.dataset.del);
+      })
+    );
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function deleteSession(sessionId) {
+  if (state.streaming) {
+    showToast("调查进行中，结束后再删除");
+    return;
+  }
+  const ok = window.confirm(
+    "删除这个对话？\n\n将移除该对话的全部轮次、报告、图表与 Trace，只保留你的提问。"
+  );
+  if (!ok) return;
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    const lastQuery = (data.queries || []).slice(-1)[0] || "";
+    if (state.sessionId === sessionId) {
+      resetWorkbench();
+      switchView("workbench");
+      if (lastQuery) {
+        $("#input").value = lastQuery;
+        $("#input").focus();
+      }
+    }
+    await Promise.all([loadSessions(), loadDeleted(), loadReports(false)]);
+    showToast(lastQuery ? "对话已删除，提问已保留并填入输入框" : "对话已删除");
+  } catch (e) {
+    console.error(e);
+    showToast("删除失败");
+  }
+}
+
+async function loadDeleted() {
+  try {
+    const r = await fetch("/api/deleted-sessions?limit=20", { cache: "no-store" });
+    const data = await r.json();
+    const list = data.sessions || [];
+    $("#deleted-count").textContent = String(list.length);
+    const el = $("#deleted-list");
+    if (!list.length) {
+      el.innerHTML = `<div class="side-empty">删除对话后，提问会保留在这里</div>`;
+      return;
+    }
+    el.innerHTML = list
+      .map(
+        (s) => `<button class="deleted-item" data-q="${esc(s.first_query || "")}" title="${esc(
+          (s.queries || []).join(" / ")
+        )}">${esc(s.first_query || "（无提问）")}</button>`
+      )
+      .join("");
+    $$(".deleted-item", el).forEach((btn) =>
+      btn.addEventListener("click", () => {
+        switchView("workbench");
+        $("#input").value = btn.dataset.q;
+        $("#input").focus();
+        showToast("已填入当时的提问");
+      })
     );
   } catch (e) {
     console.error(e);
@@ -1197,6 +1270,7 @@ async function loadReports(autoSelect = true) {
     const el = $("#report-list");
     if (!state.reports.length) {
       el.innerHTML = `<div class="side-empty">还没有报告，先去工作台跑一次调查。</div>`;
+      $("#report-detail").innerHTML = `<div class="empty-state small"><p>从左侧选择一份报告查看。</p></div>`;
       return;
     }
     el.innerHTML = state.reports

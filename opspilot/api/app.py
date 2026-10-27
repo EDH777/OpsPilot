@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -205,6 +206,32 @@ async def session_detail(session_id: str, limit: int = Query(default=200, ge=1, 
     if not runs:
         raise HTTPException(404, "会话不存在")
     return {"session_id": session_id, "runs": runs}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除对话：清掉全部 run、报告与 Trace/产物目录，只归档用户提问。"""
+    result = app.state.store.delete_session(session_id)
+    if not result:
+        raise HTTPException(404, "会话不存在")
+    removed = 0
+    for run_id in result["run_ids"]:
+        path = settings.runs_dir / run_id
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    return {
+        "deleted": True,
+        "session_id": session_id,
+        "run_count": result["run_count"],
+        "queries": result["queries"],
+        "removed_dirs": removed,
+    }
+
+
+@app.get("/api/deleted-sessions")
+async def deleted_sessions(limit: int = Query(default=20, ge=1, le=100)):
+    return {"sessions": app.state.store.list_deleted_sessions(limit=limit)}
 
 
 @app.get("/api/reports")

@@ -115,7 +115,7 @@ OpsPilot/
 │   ├── web/                 index.html / app.js / styles.css（零构建、手写 SVG 图表）
 │   └── cli.py
 ├── evals/                   tasks.json + run_eval.py + results/
-├── tests/                   47 个测试
+├── tests/                   75 个测试
 ├── scripts/                 probe_llm / verify_data / check_env / check_web
 ├── data/  runs/             DuckDB 与运行产物（gitignore）
 └── docs/                    architecture.md + screenshots/
@@ -179,7 +179,9 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 点气泡任意位置切换右侧轨迹（历史模式有提示条 + 返回最新）；`scripts/e2e_cdp.py` 覆盖
 - [x] 报告：仅 `submit_report` 生成；简单查询不生成；报告中心按完整内容去重（忽略图表路径）
 - [x] 离线演示按问题选剧本（调查/取数/兜底），不再"问什么都返回同一份报告"
-- [x] 72 个测试全绿
+- [x] 删除对话：清空 run/报告/图表/Trace，只归档提问（`deleted_sessions`），输入框自动回填
+- [x] favicon：由根目录 `icon.png` 生成 128/256 两档放入 `opspilot/web/`
+- [x] 75 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）
