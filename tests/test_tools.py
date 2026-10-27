@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from opspilot.harness.errors import ErrorKind
+from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
 from opspilot.tools import api, python_tool, report, schema, sql
 
@@ -100,12 +100,15 @@ plt.savefig("demo.png", dpi=80)
     assert any(p.endswith("demo.png") for p in result["artifacts"])
 
 
-async def test_python_sandbox_reports_error_as_observation(ctx):
-    result = await python_tool.python_analysis(
-        python_tool.PythonAnalysisArgs(code="raise ValueError('boom')"), ctx
-    )
-    assert result["ok"] is False
-    assert "boom" in (result["stderr"] + (result["error"] or ""))
+async def test_python_sandbox_reports_error_as_tool_error(ctx):
+    # 回归：sandbox 内部失败必须变成工具失败（而不是"工具成功但结果里 ok=false"）
+    with pytest.raises(ToolError) as exc:
+        await python_tool.python_analysis(
+            python_tool.PythonAnalysisArgs(code="raise ValueError('boom')"), ctx
+        )
+    err = exc.value
+    assert err.kind is ErrorKind.EXECUTION_ERROR
+    assert "boom" in str(err.details)
 
 
 async def test_python_sandbox_stdout_is_utf8(ctx):

@@ -76,7 +76,7 @@ API 参数口径不统一、模型给错参数类型（后端要 `LocalDate[]`�
 | qwen 推理模型的 reasoning tokens 计入 completion | `max_tokens` 至少 4096，项目用 8192；否则长 SQL/代码被截断成非法 JSON |
 | 被截断的 tool_call 历史回传会让网关 400 | 回填前用 `sanitize_tool_calls()` 替换成合法占位 JSON |
 | qwen 偶尔把 `</think>` 漏进 content | `openai_compat._parse` 里正则清理 |
-| 模型会一直深挖不收敛 | 预算 60% 时注入 `harness_budget` 提醒；prompt 要求 2~3 条证据即收尾；简单任务走 6 步预算 |
+| 模型会一直深挖不收敛 | 预算 50% 时注入 `harness_budget` 提醒；prompt 要求 2~3 条证据即收尾、同类指标合并查询；简单任务走 6 步预算 |
 | 驾驶舱曾被缺失数据误导成 -10% 异常 | 指标按"日期配对完整"计算，覆盖率 <95% 标为数据质量缺口 |
 | 沙箱 `-I` 会忽略 `PYTHONIOENCODING`，中文 stdout 乱码 | 启动参数改为 `python -X utf8 -I main.py` |
 | 沙箱产物路径少了 `py_xxx/` 前缀，前端 404 | `run()` 统一把 artifacts 转成相对 `artifacts_dir` 的路径 |
@@ -184,6 +184,10 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 断点恢复：启动时把遗留 running 标记 interrupted；会话内一键「继续运行」，`resume_count` 计数
 - [x] 状态库 schema v2：启动自动迁移（补 `resume_count` 列），老库无需手工处理
 - [x] 运行统计：`GET /api/metrics` + 前端「运行统计」页（成功率/耗时/token/工具健康度/错误分布）
+- [x] 报告只由 Loop 发一次事件（修复同一份报告渲染两张卡）；前端按 run+内容去重
+- [x] Python 沙箱失败改为抛 `ToolError`，指标/UI/模型看到一致的失败语义
+- [x] 告警 API 补 `alarm_id`；调查提示词要求合并同类查询、Python 最多一次
+- [x] 调查预算收紧到 180k tokens，消耗 50% 时提醒收尾
 - [x] 84 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）

@@ -112,6 +112,10 @@ def test_chat_stream_with_mock_model(client):
     assert '"type": "report"' in text
     assert '"type": "run_finished"' in text
 
+    events = _sse_events(text)
+    # 回归：submit_report 只应产生一个 report 事件（曾出现工具层 + 循环层各发一次）
+    assert sum(1 for e in events if e["type"] == "report") == 1
+
     # 报告已落库并可导出
     reports = client.get("/api/reports").json()["reports"]
     assert reports

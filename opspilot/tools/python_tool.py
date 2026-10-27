@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
 from opspilot.harness.sandbox import PythonSandbox
 
@@ -40,12 +41,27 @@ async def python_analysis(args: PythonAnalysisArgs, ctx: ToolContext) -> dict[st
     result = await sandbox.run(args.code, artifacts_dir=ctx.artifacts_dir)
     data = result.to_dict()
     data["purpose"] = args.purpose
+
     if result.artifacts:
-        # 登记产物，便于 submit_report 自动附图、前端直接渲染
+        # 即使代码失败，已经落盘的图表也登记，便于报告引用
         produced: list[str] = ctx.shared.setdefault("artifacts", [])
         for path in result.artifacts:
             if path not in produced:
                 produced.append(path)
+
     if not result.ok:
-        data["hint"] = "请阅读 stderr 中的 traceback，修正代码后重试；不要重复提交同样的代码。"
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        is_timeout = "超时" in (result.error or "") or "timeout" in (result.error or "").lower()
+        raise ToolError(
+            ErrorKind.TIMEOUT if is_timeout else ErrorKind.EXECUTION_ERROR,
+            f"Python 执行失败：{result.error or '未知错误'}",
+            hint="阅读错误详情里的 stderr，修正代码后重试；不要重复提交同样的代码",
+            details={
+                "stderr_tail": stderr[-1200:],
+                "stdout_tail": stdout[-600:],
+                "artifacts": result.artifacts,
+            },
+        )
+
     return data

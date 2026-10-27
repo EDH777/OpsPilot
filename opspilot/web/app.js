@@ -17,6 +17,7 @@ const state = {
   staticMode: new URLSearchParams(location.search).get("static") === "1",
   runs: [],
   reports: [],
+  reportKeys: new Set(),
   dashboard: null,
   kpis: null,
   trendSig: "",
@@ -559,6 +560,7 @@ function resetWorkbench() {
   state.activityBubble = null;
   state.runToolNames = [];
   state.runToolResults = [];
+  state.reportKeys.clear();
   state.traceItems.clear();
   $("#messages").innerHTML = "";
   $("#trace").innerHTML = `<div class="trace-empty">每一步模型决策、工具调用、错误与重试都会出现在这里。</div>`;
@@ -1119,6 +1121,9 @@ async function showRunTrace(runId) {
 /* ------------------------------------------------------------------ 报告 */
 
 function addReportCard(report, runId = state.runId) {
+  const key = `${runId || ""}|${report.title || ""}|${report.summary || ""}`;
+  if (state.reportKeys.has(key)) return; // 防重：同一运行、同一份报告只渲染一次
+  state.reportKeys.add(key);
   const el = document.createElement("div");
   el.className = "report-card";
   el.innerHTML = renderReportHtml(report, runId);

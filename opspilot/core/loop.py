@@ -41,7 +41,7 @@ from opspilot.llm.base import BaseLLM, LLMError
 EventCallback = Callable[[Event], None]
 
 BUDGET_NUDGE = (
-    "【Harness 预算提醒】本次运行的 token 预算已消耗约 60%。"
+    "【Harness 预算提醒】本次运行的 token 预算已消耗约 50%。"
     "如果关键结论已有 2~3 条相互印证的证据，请立即调用 submit_report 收尾；"
     "不要再为追求完美重复查询同一指标。若确有未完成项，请写进报告的 limitations。"
 )
@@ -487,14 +487,14 @@ class AgentLoop:
 
                 # 预算感知：消耗过半时提醒模型收尾，避免"一直查下去"烧穿预算
                 if not nudged and (
-                    usage.total_tokens > self.settings.max_tokens * 0.6
+                    usage.total_tokens > self.settings.max_tokens * 0.5
                     or budget.steps >= self.settings.max_steps * 0.7
                 ):
                     nudged = True
                     messages.append(Message(role=Role.SYSTEM, name="harness_budget", content=BUDGET_NUDGE))
                     publish(
                         "budget_warning",
-                        message="预算已消耗约 60%，已提醒模型尽快提交报告",
+                        message="预算已消耗约 50%，已提醒模型尽快提交报告",
                         tokens=usage.total_tokens,
                         max_tokens=self.settings.max_tokens,
                     )

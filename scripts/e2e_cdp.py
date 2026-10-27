@@ -106,6 +106,7 @@ async def main() -> None:
                     "JSON.stringify({bubbles: document.querySelectorAll('.activity-bubble').length,"
                     " chips: [...document.querySelectorAll('.activity-bubble')].map(b => b.querySelectorAll('.tool-chip').length),"
                     " footers: document.querySelectorAll('.activity-footer').length,"
+                    " reportCards: document.querySelectorAll('#messages .report-card').length,"
                     " meta: document.querySelector('#trace-meta').textContent})",
                 )
             )
@@ -128,7 +129,8 @@ async def main() -> None:
                     counter,
                     "JSON.stringify({bubbles: document.querySelectorAll('.activity-bubble').length,"
                     " chips: [...document.querySelectorAll('.activity-bubble')].map(b => b.querySelectorAll('.tool-chip').length),"
-                    " footers: document.querySelectorAll('.activity-footer').length})",
+                    " footers: document.querySelectorAll('.activity-footer').length,"
+                    " reportCards: document.querySelectorAll('#messages .report-card').length})",
                 )
             )
             print("第二轮:", second)
@@ -223,6 +225,7 @@ async def main() -> None:
 
             # 断言
             assert first["bubbles"] == 1 and second["bubbles"] == 2, "气泡未按运行聚合"
+            assert first["reportCards"] == 1 and second["reportCards"] == 1, "报告卡片重复渲染"
             assert all(c >= 1 for c in second["chips"]), "气泡内没有工具 chip"
             assert hist["backHidden"] is False, "历史模式下应显示返回按钮"
             assert "历史运行" in hist["meta"], "轨迹未切到历史运行"

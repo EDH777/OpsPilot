@@ -59,9 +59,6 @@ async def submit_report(args: SubmitReportArgs, ctx: ToolContext) -> dict[str, A
     if not payload.get("charts") and produced:
         payload["charts"] = produced[:6]
     ctx.shared["report"] = payload
-    ctx.publish("report", report=payload)
-    return {
-        "accepted": True,
-        "findings": len(args.findings),
-        "message": "报告已接收，调查结束。",
-    }
+    # 注意：这里不再 publish("report")。报告事件统一由 AgentLoop 在识别到
+    # submit_report 成功后发一次，避免同一份报告在 UI 中出现两张卡片。
+    return {"accepted": True, "findings": len(args.findings), "message": "报告已接收，调查结束。"}

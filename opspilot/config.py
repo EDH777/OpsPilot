@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # ---- 预算（Harness 硬约束）----
     max_steps: int = 24
     max_tool_calls: int = 40
-    max_tokens: int = 300_000
+    max_tokens: int = 180_000
     max_seconds: float = 900.0
     context_token_budget: int = 30_000
     # 简单查询（"看一下/汇总"类）单独给一档更紧的预算

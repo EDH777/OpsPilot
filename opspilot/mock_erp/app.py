@@ -188,7 +188,7 @@ def equipment_alarms(
         if (ws_err := _check_workshop(con, workshop_id)) is not None:
             return ws_err
         sql = """
-            SELECT a.alarm_time, a.equipment_id, e.equipment_name, a.alarm_code, c.name,
+            SELECT a.alarm_id, a.alarm_time, a.equipment_id, e.equipment_name, a.alarm_code, c.name,
                    a.severity, a.message, a.duration_min
             FROM equipment_alarm a
             LEFT JOIN equipment e USING (equipment_id)
@@ -203,14 +203,15 @@ def equipment_alarms(
         rows = con.execute(sql, params).fetchall()
         items = [
             {
-                "alarm_time": r[0].isoformat(sep=" "),
-                "equipment_id": r[1],
-                "equipment_name": r[2],
-                "alarm_code": r[3],
-                "alarm_name": r[4],
-                "severity": r[5],
-                "message": r[6],
-                "duration_min": r[7],
+                "alarm_id": r[0],
+                "alarm_time": r[1].isoformat(sep=" "),
+                "equipment_id": r[2],
+                "equipment_name": r[3],
+                "alarm_code": r[4],
+                "alarm_name": r[5],
+                "severity": r[6],
+                "message": r[7],
+                "duration_min": r[8],
             }
             for r in rows
         ]
