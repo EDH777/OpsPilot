@@ -98,7 +98,8 @@ flowchart LR
 
 ## 4. 上下文与预算
 
-- **单条工具输出**：超过 `tool_output_chars`（默认 4000）按 6:4 保头保尾截断，完整结果仍在 Trace 里。
+- **单条工具输出**：超过 `tool_output_chars`（默认 4000）按 6:4 保头保尾截断；若结果里有
+  `result_ref` / `stdout_ref`，截断标记会保留引用，模型可用 `read_result` / `read_artifact` 取回全文。
 - **整体历史**：当估算 token 超过 `context_token_budget × 0.72` 时，保留 system + 初始任务 + 最近 8 条，
   中间消息压缩成一条 `harness_summary`（列出调用过的工具与结果摘要）。
 - **四道硬闸**：最大步数、最大工具调用数、最大 token、最大墙钟时间；任一超限都以结构化状态终止。

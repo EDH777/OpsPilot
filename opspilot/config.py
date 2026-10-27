@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     simple_max_seconds: float = 300.0
     simple_context_token_budget: int = 16_000
     sql_max_rows: int = 500
+    sql_preview_rows: int = 20
+    sql_summary_threshold: int = 50
     sql_timeout_s: float = 20.0
     tool_timeout_s: float = 60.0
 

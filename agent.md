@@ -59,7 +59,7 @@ API 参数口径不统一、模型给错参数类型（后端要 `LocalDate[]`�
 | 已装 | fastapi / uvicorn / openai / pydantic 2 / pandas / numpy / httpx / sqlalchemy / streamlit / pytest / matplotlib / mcp / **duckdb 2.0**（本次安装） |
 | Docker | 29.8.2，daemon 运行中（沙箱可选后端，未启用） |
 | Node | v24.14.1（前端零构建，不需要） |
-| 模型 | 阿里 MAAS OpenAI 兼容端点，模型 `qwen3.7-flash`，Key 在 `.env`（已 gitignore） |
+| 模型 | 阿里 MAAS OpenAI 兼容端点，当前 `qwen3.7-max`（可切 plus / max 快照），Key 在 `.env`（已 gitignore） |
 
 ### 执行约定（重要）
 
@@ -89,7 +89,7 @@ API 参数口径不统一、模型给错参数类型（后端要 `LocalDate[]`�
 |---|---|
 | `OPSPILOT_LLM_BASE_URL` | `https://ws-...maas.aliyuncs.com/compatible-mode/v1` |
 | `OPSPILOT_LLM_API_KEY` | 阿里免费额度 Key（只在 `.env`） |
-| `OPSPILOT_LLM_MODEL` | `qwen3.7-flash` |
+| `OPSPILOT_LLM_MODEL` | `qwen3.7-max` |
 | `OPSPILOT_LLM_MAX_TOKENS` | `8192` |
 
 - 代码通过 `opspilot.config.Settings` 读取，不硬编码。
@@ -115,7 +115,7 @@ OpsPilot/
 │   ├── web/                 index.html / app.js / styles.css（零构建、手写 SVG 图表）
 │   └── cli.py
 ├── evals/                   tasks.json + run_eval.py + results/
-├── tests/                   84 个测试
+├── tests/                   88 个测试
 ├── scripts/                 probe_llm / verify_data / check_env / check_web
 ├── data/  runs/             DuckDB 与运行产物（gitignore）
 └── docs/                    architecture.md + screenshots/
@@ -169,7 +169,7 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 
 - [x] 自研 Agent Loop（Function Calling + ReAct + 预算 + 熔断 + 检查点 + 恢复）
 - [x] Harness 全部模块（注册/执行/错误/上下文/状态/沙箱/追踪/预算）
-- [x] 7 个业务工具 + 模拟 ERP（严格参数、结构化 400）
+- [x] 9 个业务工具 + 模拟 ERP（严格参数、结构化 400）
 - [x] 模拟工厂数据：WS-03 空压机空转导致 +13.2% 单位电耗；WS-05 干扰项；WS-02 数据缺口
 - [x] FastAPI + SSE + Web 工作台（驾驶舱 / 调查 / 报告中心 / Trace 回放 / Markdown 导出）
 - [x] 看板实时推送：`/api/dashboard/stream`，指纹（db+wal mtime/size）变化才重算，前端增量更新 + 版本号
@@ -187,8 +187,10 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 报告只由 Loop 发一次事件（修复同一份报告渲染两张卡）；前端按 run+内容去重
 - [x] Python 沙箱失败改为抛 `ToolError`，指标/UI/模型看到一致的失败语义
 - [x] 告警 API 补 `alarm_id`；调查提示词要求合并同类查询、Python 最多一次
+- [x] 大结果不静默截断：SQL 落 parquet + 统计/样本/`result_ref`，stdout 落 `stdout.txt`，提供 `read_result` / `read_artifact`
+- [x] 模型切到 `qwen3.7-max`（已实测 max/plus/快照版可用）
 - [x] 调查预算收紧到 180k tokens，消耗 50% 时提醒收尾
-- [x] 84 个测试全绿
+- [x] 88 个测试全绿
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）

@@ -22,7 +22,6 @@ from typing import Any
 from opspilot.config import Settings
 
 _ARTIFACT_SUFFIXES = {".png", ".svg", ".jpg", ".jpeg", ".html", ".csv", ".json", ".md", ".txt"}
-_MAX_OUTPUT = 20_000
 
 
 @dataclass
@@ -36,6 +35,10 @@ class SandboxResult:
     workdir: str = ""
     backend: str = "subprocess"
     error: str | None = None
+    stdout_ref: str | None = None
+    stderr_ref: str | None = None
+    stdout_lines: int = 0
+    stdout_truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +50,10 @@ class SandboxResult:
             "artifacts": self.artifacts,
             "backend": self.backend,
             "error": self.error,
+            "stdout_ref": self.stdout_ref,
+            "stderr_ref": self.stderr_ref,
+            "stdout_lines": self.stdout_lines,
+            "stdout_truncated": self.stdout_truncated,
         }
 
 
@@ -125,8 +132,9 @@ class PythonSandbox:
             )
 
         duration = round((time.perf_counter() - started) * 1000, 1)
-        stdout = self._decode(stdout_b)
-        stderr = self._decode(stderr_b)
+        stdout, stderr, stdout_ref, stderr_ref, stdout_lines, stdout_truncated = self._shape_output(
+            workdir, self._decode(stdout_b), self._decode(stderr_b)
+        )
         return SandboxResult(
             ok=proc.returncode == 0,
             stdout=stdout,
@@ -137,6 +145,10 @@ class PythonSandbox:
             workdir=str(workdir),
             backend="subprocess",
             error=None if proc.returncode == 0 else (stderr.strip().splitlines()[-1] if stderr.strip() else f"退出码 {proc.returncode}"),
+            stdout_ref=stdout_ref,
+            stderr_ref=stderr_ref,
+            stdout_lines=stdout_lines,
+            stdout_truncated=stdout_truncated,
         )
 
     async def _run_docker(self, workdir: Path, timeout: float) -> SandboxResult:
@@ -181,33 +193,65 @@ class PythonSandbox:
                 backend="docker",
                 error="执行超时",
             )
-        stderr = self._decode(stderr_b)
+        duration = round((time.perf_counter() - started) * 1000, 1)
+        stdout, stderr, stdout_ref, stderr_ref, stdout_lines, stdout_truncated = self._shape_output(
+            workdir, self._decode(stdout_b), self._decode(stderr_b)
+        )
         return SandboxResult(
             ok=proc.returncode == 0,
-            stdout=self._decode(stdout_b),
+            stdout=stdout,
             stderr=stderr,
             exit_code=proc.returncode,
-            duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            duration_ms=duration,
             artifacts=self._collect_artifacts(workdir),
             workdir=str(workdir),
             backend="docker",
             error=None if proc.returncode == 0 else (stderr.strip()[-500:] or f"退出码 {proc.returncode}"),
+            stdout_ref=stdout_ref,
+            stderr_ref=stderr_ref,
+            stdout_lines=stdout_lines,
+            stdout_truncated=stdout_truncated,
         )
 
     # ------------------------------------------------------------------ 工具
 
     @staticmethod
     def _decode(raw: bytes) -> str:
-        text = raw.decode("utf-8", errors="replace")
-        if len(text) > _MAX_OUTPUT:
-            half = _MAX_OUTPUT // 2
-            text = text[:half] + f"\n…（输出过长，已省略 {len(text) - _MAX_OUTPUT} 字符）…\n" + text[-half:]
-        return text
+        return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _shape_output(
+        workdir: Path, stdout: str, stderr: str
+    ) -> tuple[str, str, str | None, str | None, int, bool]:
+        """上下文只放头/尾，完整输出落盘为 artifact，模型可按需读取。"""
+        stdout_lines = stdout.count("\n") + (1 if stdout and not stdout.endswith("\n") else 0)
+        stdout_ref: str | None = None
+        stderr_ref: str | None = None
+        truncated = False
+
+        if len(stdout) > 3000:
+            path = workdir / "stdout.txt"
+            path.write_text(stdout, encoding="utf-8", newline="\n")
+            stdout_ref = f"{workdir.name}/stdout.txt"
+            truncated = True
+            stdout = (
+                stdout[:1800]
+                + f"\n…（stdout 共 {stdout_lines} 行，已截断；完整内容见 {stdout_ref}，可用 read_artifact 读取）…\n"
+                + stdout[-700:]
+            )
+        if len(stderr) > 3000:
+            path = workdir / "stderr.txt"
+            path.write_text(stderr, encoding="utf-8", newline="\n")
+            stderr_ref = f"{workdir.name}/stderr.txt"
+            stderr = f"…（stderr 已截断，完整内容见 {stderr_ref}）…\n" + stderr[-2000:]
+        return stdout, stderr, stdout_ref, stderr_ref, stdout_lines, truncated
 
     @staticmethod
     def _collect_artifacts(workdir: Path) -> list[str]:
         items: list[str] = []
         for path in sorted(workdir.rglob("*")):
-            if path.is_file() and path.name != "main.py" and path.suffix.lower() in _ARTIFACT_SUFFIXES:
+            if path.name in {"main.py", "stdout.txt", "stderr.txt"}:
+                continue
+            if path.is_file() and path.suffix.lower() in _ARTIFACT_SUFFIXES:
                 items.append(path.relative_to(workdir).as_posix())
         return items[:20]

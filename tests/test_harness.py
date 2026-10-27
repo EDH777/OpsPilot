@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,22 @@ def test_context_truncates_long_tool_output():
     assert stats.truncated_outputs == 1
     assert len(packed[-1].content) < 600
     assert "截断" in packed[-1].content
+
+
+def test_context_truncation_preserves_result_ref():
+    cm = ContextManager(token_budget=100_000, tool_output_chars=200)
+    content = json.dumps(
+        {"ok": True, "result": {"result_ref": "results/x.parquet", "rows": [[i] for i in range(100)]}},
+        ensure_ascii=False,
+    )
+    messages = [
+        _msg(Role.SYSTEM, "system"),
+        _msg(Role.USER, "task"),
+        _msg(Role.TOOL, content, tool_call_id="c1"),
+    ]
+    packed, stats = cm.compact(messages)
+    assert stats.truncated_outputs == 1
+    assert "results/x.parquet" in packed[-1].content
 
 
 def test_context_compacts_middle_history():

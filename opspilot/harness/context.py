@@ -7,10 +7,13 @@ LLM 的上下文不是垃圾桶。长 SQL 结果、几十轮工具输出会把�
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from opspilot.core.types import Message, Role, estimate_tokens
+
+_REF_PATTERN = re.compile(r'"(result_ref|stdout_ref|stderr_ref)":\s*"([^"]+)"')
 
 
 @dataclass
@@ -90,11 +93,16 @@ class ContextManager:
                 content = msg.content
                 head = int(limit * 0.6)
                 tail = limit - head
+                refs: list[str] = []
+                for _, ref in _REF_PATTERN.findall(content):
+                    if ref not in refs:
+                        refs.append(ref)
+                ref_text = f"；完整结果见 {'、'.join(refs)}，可用 read_result/read_artifact 读取" if refs else ""
                 msg = Message(
                     role=msg.role,
                     content=(
                         content[:head]
-                        + f"\n…（harness 截断 {len(content) - head - tail} 字符，完整结果已保存到 Trace）…\n"
+                        + f"\n…（harness 截断 {len(content) - head - tail} 字符{ref_text}）…\n"
                         + content[-tail:]
                     ),
                     tool_call_id=msg.tool_call_id,
@@ -122,6 +130,9 @@ class ContextManager:
                     lines.append(f"· 调用 {call.name}（参数 {call.arguments[:120]}）")
             elif msg.role is Role.TOOL:
                 snippet = (msg.content or "").replace("\n", " ")[:160]
+                refs = [ref for _, ref in _REF_PATTERN.findall(msg.content or "")]
+                if refs:
+                    snippet += f"（完整结果：{refs[0]}）"
                 lines.append(f"  → 结果：{snippet}")
             elif msg.role is Role.ASSISTANT and msg.content:
                 lines.append(f"· 说明：{msg.content[:160]}")

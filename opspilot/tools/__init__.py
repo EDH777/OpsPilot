@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from opspilot.harness.registry import ToolRegistry, ToolSpec
-from opspilot.tools import api, python_tool, report, schema, sql
+from opspilot.tools import api, artifacts, python_tool, report, schema, sql
 
 
 def register_all(registry: ToolRegistry) -> ToolRegistry:
@@ -34,6 +34,30 @@ def register_all(registry: ToolRegistry) -> ToolRegistry:
                 "SELECT workshop_id, SUM(output_qty) FROM production_record GROUP BY 1",
                 "WITH x AS (...) SELECT ...",
             ),
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="read_result",
+            description=sql.READ_RESULT_DESCRIPTION,
+            args_model=sql.ReadResultArgs,
+            handler=sql.read_result,
+            read_only=True,
+            timeout_s=30,
+            max_retries=1,
+            tags=("data", "artifact"),
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="read_artifact",
+            description=artifacts.DESCRIPTION,
+            args_model=artifacts.ReadArtifactArgs,
+            handler=artifacts.read_artifact,
+            read_only=True,
+            timeout_s=30,
+            max_retries=1,
+            tags=("artifact",),
         )
     )
     registry.register(

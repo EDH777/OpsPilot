@@ -54,6 +54,11 @@ Harness 负责让这个动作安全、可校验、可重试、可追溯。
 
 Trace、报告、图表全部落盘：`runs/<run_id>/trace.jsonl`、`runs/<run_id>/artifacts/`。
 
+> P1 优化后复测（`qwen3.7-max`）：同一问题 **9 步 / 14 次工具调用（含并行批次）/ 125,131 tokens**，
+> 模型用 `read_result` 翻页查看 56 行明细，最终报告只产生 1 个 `report` 事件。
+> 相比修复前的 11 步 / 154k tokens，步数与 token 都下降约 18%~19%；与更早的 10 步 / 90k 相比仍偏高，
+> 差异主要来自模型（max 输出更长）与一次真实的 SQL 语法重试。
+
 ---
 
 ## 3. 核心能力
@@ -95,13 +100,19 @@ Trace、报告、图表全部落盘：`runs/<run_id>/trace.jsonl`、`runs/<run_i
 
 | 工具 | 说明 |
 |---|---|
+| `run_sql` | DuckDB 只读 SQL，词法白名单 + 超时中断；≤50 行直返，更大结果落 parquet 并返回统计/样本/`result_ref` |
+| `read_result` | 按 offset/limit 翻页读取 `run_sql` 落盘的大结果，避免静默截断 |
 | `inspect_schema` | 表结构、行数、时间覆盖、指标口径，以及枚举列的**值域**（避免猜错 `energy_type` 之类的取值） |
-| `run_sql` | DuckDB 只读 SQL，词法白名单 + 500 行上限 + 超时中断 |
 | `query_equipment_api` | 设备运行明细（模拟 MES） |
-| `query_alarm_api` | 设备告警（含告警码字典） |
+| `query_alarm_api` | 设备告警（含 `alarm_id` 与告警码字典） |
 | `query_production_api` | 生产月报汇总 |
-| `python_analysis` | 沙箱执行 pandas/matplotlib，图表自动登记 |
-| `submit_report` | 强 Schema 结构化报告，显式终止信号 |
+| `python_analysis` | 沙箱执行 pandas/matplotlib；stdout 超长落盘为 `stdout.txt`，图表自动登记 |
+| `read_artifact` | 按行读取 `stdout.txt` / `stderr.txt` / csv 等文本产物 |
+| `submit_report` | 强 Schema 结构化报告，显式终止信号（只发一次 report 事件） |
+
+**结果不做静默截断**：`run_sql` 超过 50 行会落盘为 parquet，上下文里只放列、总行数、数值统计
+（min/max/avg/p50/p95/nulls）、低基数列 top 值、头尾样本与 `result_ref`；模型用 `read_result` 翻页。
+`python_analysis` 的 stdout 超过 3000 字符同样落盘为 `stdout.txt`，用 `read_artifact` 按行读取。
 
 ### 3.5 Web 工作台
 
@@ -219,7 +230,7 @@ WS-03: 单位电耗 2.820 → 3.191 kWh/件 (+13.2%)，日均产量 1207.1 → 1
 & "D:\Anaconda3\envs\chAgent\python.exe" -m pytest -q
 ```
 
-当前 **84 个测试全部通过**，覆盖参数修复、错误分类、预算、上下文压缩、检查点、
+当前 **88 个测试全部通过**，覆盖参数修复、错误分类、预算、上下文压缩、检查点、
 SQL 只读防护、沙箱、Loop 端到端、SSE 接口与看板变更推送、报告导出。
 
 ---
@@ -253,7 +264,7 @@ OpsPilot/
 │   ├── web/                  # 零构建前端（index.html / app.js / styles.css）
 │   └── cli.py                # 命令行
 ├── evals/                    # 验收任务集与评测脚本
-├── tests/                    # 84 个测试
+├── tests/                    # 88 个测试
 ├── data/                     # DuckDB 数据文件（gitignore）
 ├── runs/                     # Trace / 图表 / 状态（gitignore）
 └── docs/                     # 架构说明与截图
@@ -336,7 +347,7 @@ OpsPilot/
 - **单轮任务**：每个 run 独立，多轮会话上下文继承尚未实现。
 - **无人工审批流**：`PAUSED` 状态已预留，但尚未接入审批 UI。
 - **数据是合成的**：真实项目需替换 `data/seed.py` 与业务 API 适配层。
-- **只验证了 qwen3.7-flash**：其他模型需实测 function calling 与 `reasoning_content` 兼容性。
+- **只验证了 qwen 系列**：qwen3.7-flash / qwen3.7-max / plus 已实测 function calling 与 `reasoning_content`；其他供应商需自行验证。
 
 ---
 

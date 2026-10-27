@@ -8,7 +8,7 @@ import pytest
 
 from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
-from opspilot.tools import api, python_tool, report, schema, sql
+from opspilot.tools import api, artifacts, python_tool, report, schema, sql
 
 
 @pytest.fixture
@@ -81,6 +81,60 @@ async def test_run_sql_allows_cte(ctx):
     )
     assert result["ok"] is True
     assert result["rows"][0][0] == 5
+
+
+async def test_run_sql_large_result_saves_ref_and_stats(ctx):
+    result = await sql.run_sql(
+        sql.RunSqlArgs(sql="SELECT range AS n, range * 2 AS n2 FROM range(200)", purpose="大数据集"),
+        ctx,
+    )
+    assert result["truncated"] is True
+    assert result["row_count"] == 200
+    assert result["returned_rows"] == 15
+    assert result["sample"]["head"] and result["sample"]["tail"]
+    assert result["result_ref"].endswith(".parquet")
+    assert result["stats"]["n"]["min"] == 0
+    assert result["stats"]["n"]["max"] == 199
+    assert result["stats"]["n"]["p50"] == 100
+
+    page = await sql.read_result(
+        sql.ReadResultArgs(result_ref=result["result_ref"], offset=190, limit=5), ctx
+    )
+    assert page["row_count"] == 200
+    assert page["rows"] == [[190, 380], [191, 382], [192, 384], [193, 386], [194, 388]]
+    assert page["has_more"] is True
+
+    last = await sql.read_result(
+        sql.ReadResultArgs(result_ref=result["result_ref"], offset=199, limit=5), ctx
+    )
+    assert last["rows"] == [[199, 398]]
+    assert last["has_more"] is False
+
+
+async def test_read_result_rejects_path_traversal(ctx):
+    with pytest.raises(ToolError) as exc:
+        await sql.read_result(sql.ReadResultArgs(result_ref="../secret.parquet"), ctx)
+    assert exc.value.kind is ErrorKind.PERMISSION_DENIED
+
+
+async def test_python_long_stdout_saved_and_readable(ctx):
+    result = await python_tool.python_analysis(
+        python_tool.PythonAnalysisArgs(code="for i in range(1200):\n    print(f'line {i}')"), ctx
+    )
+    assert result["stdout_truncated"] is True
+    assert result["stdout_lines"] == 1200
+    assert result["stdout_ref"].endswith("stdout.txt")
+    assert "完整内容见" in result["stdout"]
+
+    head = await artifacts.read_artifact(
+        artifacts.ReadArtifactArgs(path=result["stdout_ref"], offset=0, limit=3), ctx
+    )
+    assert head["lines"].splitlines() == ["line 0", "line 1", "line 2"]
+    tail = await artifacts.read_artifact(
+        artifacts.ReadArtifactArgs(path=result["stdout_ref"], offset=1198, limit=5), ctx
+    )
+    assert tail["lines"].splitlines() == ["line 1198", "line 1199"]
+    assert tail["has_more"] is False
 
 
 async def test_python_sandbox_runs_code_and_collects_artifact(ctx):

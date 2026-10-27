@@ -56,10 +56,13 @@ async def python_analysis(args: PythonAnalysisArgs, ctx: ToolContext) -> dict[st
         raise ToolError(
             ErrorKind.TIMEOUT if is_timeout else ErrorKind.EXECUTION_ERROR,
             f"Python 执行失败：{result.error or '未知错误'}",
-            hint="阅读错误详情里的 stderr，修正代码后重试；不要重复提交同样的代码",
+            hint="阅读错误详情里的 stderr，修正代码后重试；不要重复提交同样的代码。"
+            "完整输出可用 read_artifact 读取。",
             details={
                 "stderr_tail": stderr[-1200:],
                 "stdout_tail": stdout[-600:],
+                "stdout_ref": result.stdout_ref,
+                "stderr_ref": result.stderr_ref,
                 "artifacts": result.artifacts,
             },
         )
