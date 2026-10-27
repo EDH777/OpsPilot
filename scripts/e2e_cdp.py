@@ -144,19 +144,38 @@ async def main() -> None:
             )
             print("侧栏会话:", sess)
 
-            # 点第一个（历史）气泡的轨迹按钮
-            await js(ws, counter, "document.querySelectorAll('.activity-footer .link-btn')[0].click()")
-            await asyncio.sleep(1.5)
+            # 点第一个（历史）气泡的“气泡本体”，而不是底部链接
+            await js(ws, counter, "document.querySelectorAll('.activity-bubble')[0].click()")
+            await asyncio.sleep(1.2)
             hist = json.loads(
                 await js(
                     ws,
                     counter,
                     "JSON.stringify({meta: document.querySelector('#trace-meta').textContent,"
+                    " bannerHidden: document.querySelector('#trace-history').hidden,"
+                    " banner: document.querySelector('#trace-history-text').textContent,"
                     " backHidden: document.querySelector('#back-to-live').hidden,"
                     " active: [...document.querySelectorAll('.activity-bubble')].findIndex(b => b.classList.contains('trace-active'))})",
                 )
             )
             print("点击历史气泡后:", hist)
+
+            # 历史模式截图（用于文档）
+            shot_hist = await cdp(ws, counter, "Page.captureScreenshot", {"format": "png"})
+            (OUT.parent / "e2e_history.png").write_bytes(base64.b64decode(shot_hist["result"]["data"]))
+
+            # 再点最新那个气泡，应回到最新运行
+            await js(ws, counter, "document.querySelectorAll('.activity-bubble')[1].click()")
+            await asyncio.sleep(1.0)
+            latest = json.loads(
+                await js(
+                    ws,
+                    counter,
+                    "JSON.stringify({meta: document.querySelector('#trace-meta').textContent,"
+                    " bannerHidden: document.querySelector('#trace-history').hidden})",
+                )
+            )
+            print("点回最新气泡后:", latest)
 
             # 点侧栏会话，验证整段对话能恢复
             await js(ws, counter, "document.querySelector('.session-item.active').click()")
@@ -167,6 +186,7 @@ async def main() -> None:
                     counter,
                     "JSON.stringify({users: document.querySelectorAll('.msg.user').length,"
                     " bubbles: document.querySelectorAll('.activity-bubble').length,"
+                    " footLabels: [...document.querySelectorAll('.activity-footer .af-run')].map(e => e.textContent),"
                     " lastUser: ([...document.querySelectorAll('.msg.user .bubble')].pop() || {}).textContent || ''})",
                 )
             )
@@ -186,8 +206,12 @@ async def main() -> None:
             assert hist["active"] == 0, "历史气泡未高亮"
             assert sess["active"] == 1, "侧栏应只有当前会话处于选中态"
             assert "2 轮" in sess["meta"], f"侧栏应显示会话轮数，实际 {sess['meta']!r}"
+            assert hist["bannerHidden"] is False, "历史模式应显示提示条"
+            assert "第 1 轮" in hist["banner"], f"提示条应包含轮次，实际 {hist['banner']!r}"
+            assert latest["bannerHidden"] is True and "最新运行" in latest["meta"], "点最新气泡应回到最新运行"
             assert restored["users"] == 2 and restored["bubbles"] == 2, "重开会话未恢复两轮对话"
             assert "9月份" in restored["lastUser"], "恢复的对话最后一条不是第二轮问题"
+            assert any("第 1 轮" in x for x in restored["footLabels"]), "恢复后气泡未标注轮次"
             print("E2E 通过")
     finally:
         proc.terminate()

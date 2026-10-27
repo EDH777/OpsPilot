@@ -50,6 +50,9 @@ async function init() {
   $("#back-to-live").addEventListener("click", () => {
     if (state.runId) showRunTrace(state.runId);
   });
+  $("#trace-history-back").addEventListener("click", () => {
+    if (state.runId) showRunTrace(state.runId);
+  });
   await checkHealth();
   await Promise.all([loadSessions(), loadReports()]);
   if (state.staticMode) {
@@ -443,6 +446,8 @@ function resetWorkbench() {
   $("#budget").innerHTML = "";
   $("#live-dot").classList.remove("on");
   $("#back-to-live").hidden = true;
+  const banner = $("#trace-history");
+  if (banner) banner.hidden = true;
 }
 
 function addMessage(role, html) {
@@ -462,11 +467,31 @@ function addMessage(role, html) {
 /* 一次运行一个聚合气泡：直播与回放外观一致，点击可查看该次轨迹 */
 
 function createActivityBubble(runId) {
+  // 必须在插入 DOM 之前算轮次，否则会把自己算进去，导致第一轮显示成第 2 轮
+  const round = document.querySelectorAll(".activity-bubble").length + 1;
   const wrap = addMessage("assistant", "");
   const bubble = wrap.querySelector(".bubble");
   bubble.classList.add("activity-bubble");
   bubble.dataset.runId = runId || "";
+  bubble.dataset.round = String(round);
+  bubble.tabIndex = 0;
+  bubble.setAttribute("role", "button");
+  bubble.title = "点击查看本次运行的执行轨迹";
   bubble.innerHTML = `<div class="activity-caption">工具调用 <b class="ac-count">0</b> 次</div>`;
+
+  const openTrace = (e) => {
+    // 气泡里的按钮/链接自己处理，避免重复触发
+    if (e && e.target && e.target.closest && e.target.closest("button, a")) return;
+    const rid = bubble.dataset.runId;
+    if (rid) showRunTrace(rid);
+  };
+  bubble.addEventListener("click", openTrace);
+  bubble.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openTrace();
+    }
+  });
   return bubble;
 }
 
@@ -488,7 +513,7 @@ function appendChip(bubble, callId, name) {
   scrollChat();
 }
 
-function renderActivityChips(bubble, results, runId) {
+function renderActivityChips(bubble, results, runId, label = "") {
   if (!bubble) return;
   bubble.querySelectorAll(".tool-chip").forEach((c) => c.remove());
   const groups = [];
@@ -510,22 +535,26 @@ function renderActivityChips(bubble, results, runId) {
     chip.innerHTML = `<span class="dot"></span>${esc(g.name)}${g.count > 1 ? ` ×${g.count}` : ""}`;
     bubble.appendChild(chip);
   });
-  addActivityFooter(bubble, runId);
+  addActivityFooter(bubble, runId, label);
 }
 
-function addActivityFooter(bubble, runId) {
+function addActivityFooter(bubble, runId, label = "") {
   if (!runId || bubble.querySelector(".activity-footer")) return;
   const footer = document.createElement("div");
   footer.className = "activity-footer";
-  footer.innerHTML = `<button class="link-btn">查看本次执行轨迹</button><span class="af-run">${esc(runId.slice(4, 12))}</span>`;
-  footer.querySelector("button").addEventListener("click", () => showRunTrace(runId));
+  footer.innerHTML = `<button class="link-btn">查看本次执行轨迹</button><span class="af-run">${label ? `${esc(label)} · ` : ""}${esc(runId.slice(4, 12))}</span>`;
+  footer.querySelector("button").addEventListener("click", (e) => {
+    e.stopPropagation();
+    showRunTrace(runId);
+  });
   bubble.appendChild(footer);
 }
 
 function finalizeActivity() {
   const bubble = state.activityBubble;
   if (!bubble) return;
-  renderActivityChips(bubble, state.runToolResults, state.runId);
+  const round = bubble.dataset.round;
+  renderActivityChips(bubble, state.runToolResults, state.runId, round ? `第 ${round} 轮` : "");
 }
 
 function markActiveActivity(runId) {
@@ -627,6 +656,7 @@ function handleEvent(ev) {
       appendTraceNote(`开始运行 · ${d.profile_label || "异常调查"} · ${d.tools.length} 个工具可用`, "info");
       renderBudget(d.budget, null);
       $("#back-to-live").hidden = true;
+      $("#trace-history").hidden = true;
       $("#live-dot").classList.add("on");
       setThinking("正在理解问题…");
       break;
@@ -700,17 +730,20 @@ function handleEvent(ev) {
     case "run_finished": {
       clearThinking();
       finalizeActivity();
-      state.viewingRunId = state.runId;
-      $("#trace-meta").textContent = `run ${(state.runId || "").slice(4, 12)} · 最新运行`;
-      $("#back-to-live").hidden = true;
-      markActiveActivity(state.runId);
-      renderBudget(d.budget, d.usage);
-      const ok = d.status === "completed";
-      appendTraceNote(
-        `${ok ? "完成" : "结束"} · ${d.budget.steps} 步 / ${d.budget.tool_calls} 次工具 / ${d.usage.total_tokens} tokens / ${(d.duration_ms / 1000).toFixed(1)}s`,
-        ok ? "ok" : "bad"
-      );
-      if (!ok && d.error) appendTraceNote(d.error, "bad");
+      // 用户可能正在看某一轮历史轨迹，不要强行抢回焦点
+      if (state.viewingRunId === state.runId) {
+        $("#trace-meta").textContent = `run ${(state.runId || "").slice(4, 12)} · 最新运行`;
+        $("#back-to-live").hidden = true;
+        $("#trace-history").hidden = true;
+        markActiveActivity(state.runId);
+        renderBudget(d.budget, d.usage);
+        const ok = d.status === "completed";
+        appendTraceNote(
+          `${ok ? "完成" : "结束"} · ${d.budget.steps} 步 / ${d.budget.tool_calls} 次工具 / ${d.usage.total_tokens} tokens / ${(d.duration_ms / 1000).toFixed(1)}s`,
+          ok ? "ok" : "bad"
+        );
+        if (!ok && d.error) appendTraceNote(d.error, "bad");
+      }
       break;
     }
     default:
@@ -946,8 +979,17 @@ async function showRunTrace(runId) {
   }
 
   const isLatest = runId === state.runId;
+  const bubble = document.querySelector(`.activity-bubble[data-run-id="${runId}"]`);
+  const round = bubble && bubble.dataset.round;
   $("#trace-meta").textContent = `run ${runId.slice(4, 12)} · ${isLatest ? "最新运行" : "历史运行"}`;
   $("#back-to-live").hidden = isLatest || !state.runId;
+  const banner = $("#trace-history");
+  if (banner) {
+    banner.hidden = isLatest;
+    $("#trace-history-text").textContent = isLatest
+      ? ""
+      : `正在查看历史运行 · ${runId.slice(4, 12)}${round ? ` · 第 ${round} 轮` : ""}`;
+  }
   $("#live-dot").classList.toggle("on", isLatest && state.streaming);
   $("#trace").scrollTop = 0;
   markActiveActivity(runId);
@@ -1022,10 +1064,14 @@ function bindReportActions(root) {
 
 /* ------------------------------------------------------------------ 历史 */
 
+let sessionsSeq = 0;
+
 async function loadSessions() {
+  const seq = ++sessionsSeq;
   try {
     const r = await fetch("/api/sessions?limit=20", { cache: "no-store" });
     const data = await r.json();
+    if (seq !== sessionsSeq) return; // 旧请求晚到，丢弃，避免把新数据覆盖成旧的
     const sessions = data.sessions || [];
     const el = $("#session-list");
     if (!sessions.length) {
@@ -1059,7 +1105,7 @@ async function openSession(sessionId, focusRunId = null) {
     if (!resp.ok) throw new Error(await resp.text());
     const runs = (await resp.json()).runs || [];
 
-    for (const run of runs) {
+    for (const [i, run] of runs.entries()) {
       let events = [];
       try {
         const er = await fetch(`/api/runs/${run.run_id}/events`, { cache: "no-store" });
@@ -1067,7 +1113,7 @@ async function openSession(sessionId, focusRunId = null) {
       } catch {
         events = [];
       }
-      appendRunToChat(run, events);
+      appendRunToChat(run, events, i + 1);
     }
 
     if (runs.length) {
@@ -1086,7 +1132,7 @@ async function openSession(sessionId, focusRunId = null) {
   await loadSessions();
 }
 
-function appendRunToChat(run, events) {
+function appendRunToChat(run, events, roundIndex = 0) {
   if (run.task) addMessage("user", esc(run.task).replace(/\n/g, "<br>"));
   let activity = null;
   const toolResults = [];
@@ -1099,7 +1145,10 @@ function appendRunToChat(run, events) {
         addMessage("assistant", md(d.content || ""));
         break;
       case "tool_started":
-        if (!activity) activity = createActivityBubble(run.run_id);
+        if (!activity) {
+          activity = createActivityBubble(run.run_id);
+          activity.dataset.round = String(roundIndex);
+        }
         appendChip(activity, d.call_id, d.name);
         break;
       case "tool_finished":
@@ -1117,7 +1166,9 @@ function appendRunToChat(run, events) {
         break;
     }
   }
-  if (activity) renderActivityChips(activity, toolResults, run.run_id);
+  if (activity) {
+    renderActivityChips(activity, toolResults, run.run_id, roundIndex ? `第 ${roundIndex} 轮` : "");
+  }
   if (run.report && !sawReport) addReportCard(run.report, run.run_id);
 }
 

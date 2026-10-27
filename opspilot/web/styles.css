@@ -320,6 +320,12 @@ button { font: inherit; cursor: pointer; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
 .live-dot.on { background: var(--accent); box-shadow: 0 0 0 4px rgba(234, 88, 12, .13); animation: blink 1.2s infinite; }
 .trace-body { flex: 1; overflow-y: auto; padding: 12px 14px 8px; }
+.trace-history {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 14px; background: #fff7ed; border-bottom: 1px solid #fed7aa;
+  font-size: 11.5px; color: var(--accent-ink);
+}
+.trace-history[hidden] { display: none; }
 .trace-empty { color: var(--muted); font-size: 12px; line-height: 1.6; padding: 10px 2px; }
 
 .trace-item { border-left: 2px solid var(--line); padding: 2px 0 12px 12px; position: relative; }
@@ -347,7 +353,16 @@ button { font: inherit; cursor: pointer; }
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .activity-caption { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+.activity-bubble {
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+}
+.activity-bubble:hover { border-color: #fdba74; }
+.activity-bubble:focus-visible { outline: 2px solid #fdba74; outline-offset: 2px; }
 .activity-bubble.trace-active { border-color: #fdba74; box-shadow: 0 0 0 2px rgba(234, 88, 12, .08); }
+.activity-bubble.trace-active .activity-caption::after {
+  content: " · 正在查看"; color: var(--accent); font-weight: 600;
+}
 .activity-footer {
   display: flex; align-items: center; gap: 8px; margin-top: 8px;
   padding-top: 8px; border-top: 1px dashed var(--line-2);
