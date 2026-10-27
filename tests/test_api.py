@@ -115,6 +115,7 @@ def test_chat_stream_with_mock_model(client):
     # 报告已落库并可导出
     reports = client.get("/api/reports").json()["reports"]
     assert reports
+    assert all("duplicates" in r for r in reports)
     run_id = reports[0]["run_id"]
     md = client.get(f"/api/runs/{run_id}/report.md")
     assert md.status_code == 200

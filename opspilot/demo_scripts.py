@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import date, timedelta
+
+from opspilot.core.types import Role
 from opspilot.llm.mock import ScriptedLLM, assistant, tool_call
 
 SQL_UNIT_ENERGY = """
@@ -177,5 +182,106 @@ def mock_error_recovery() -> ScriptedLLM:
                 ],
             ),
             assistant(tool_calls=[tool_call("submit_report", report)]),
+        ]
+    )
+
+
+# --------------------------------------------------------------------- 按问题选择演示剧本
+
+_WORKSHOP_NAMES = {"WS-01": "一号车间", "WS-02": "二号车间", "WS-03": "三号车间", "WS-04": "四号车间", "WS-05": "五号车间"}
+_CN_NUM = {"一": "1", "二": "2", "三": "3", "四": "4", "五": "5", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5"}
+
+
+def _parse_workshop(task: str) -> str | None:
+    m = re.search(r"WS[-_ ]?0?([1-5])", task, re.IGNORECASE)
+    if m:
+        return f"WS-0{m.group(1)}"
+    m = re.search(r"([一二三四五1-5])\s*号?\s*车间", task)
+    if m:
+        return f"WS-0{_CN_NUM[m.group(1)]}"
+    return None
+
+
+def _parse_month(task: str) -> tuple[int, int]:
+    today = date(2026, 10, 27)
+    if "上个月" in task or "上月" in task:
+        prev = date(today.year, today.month, 1) - timedelta(days=1)
+        return prev.year, prev.month
+    if "这个月" in task or "本月" in task or "当月" in task:
+        return today.year, today.month
+    m = re.search(r"(\d{1,2})\s*月", task)
+    if m:
+        month = max(1, min(12, int(m.group(1))))
+        year = today.year - 1 if month > today.month else today.year
+        return year, month
+    return today.year, today.month
+
+
+def _electricity_summary(task: str) -> ScriptedLLM:
+    workshop_id = _parse_workshop(task) or "WS-03"
+    workshop_name = _WORKSHOP_NAMES.get(workshop_id, workshop_id)
+    year, month = _parse_month(task)
+    start = date(year, month, 1)
+    end = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    label = f"{year}年{month}月"
+    sql = (
+        "SELECT COUNT(*) AS days, ROUND(SUM(quantity),1) AS total_kwh, ROUND(AVG(quantity),1) AS avg_kwh,\n"
+        "       ROUND(MIN(quantity),1) AS min_kwh, ROUND(MAX(quantity),1) AS max_kwh,\n"
+        "       MIN(CAST(record_date AS VARCHAR)) AS first_day, MAX(CAST(record_date AS VARCHAR)) AS last_day\n"
+        "FROM energy_record\n"
+        f"WHERE workshop_id = '{workshop_id}' AND energy_type = 'electricity'\n"
+        f"  AND record_date >= DATE '{start.isoformat()}' AND record_date < DATE '{end.isoformat()}'"
+    )
+
+    def answer(messages, tools):  # noqa: ANN001
+        tool_msgs = [m for m in messages if m.role is Role.TOOL]
+        if not tool_msgs:
+            return assistant(content="（离线演示）没有拿到查询结果。")
+        payload = json.loads(tool_msgs[-1].content)
+        result = payload.get("result") or {}
+        rows = result.get("rows") or []
+        if not rows or not rows[0] or not rows[0][0]:
+            return assistant(content=f"{workshop_name} 在 {label} 没有用电记录。")
+        days, total, avg, mn, mx, first, last = rows[0]
+        return assistant(
+            content=(
+                f"**{workshop_name} {label} 用电情况（离线演示）**\n\n"
+                "| 指标 | 数值 |\n|---|---|\n"
+                f"| 总用电量 | {total:,.1f} kWh |\n"
+                f"| 有记录天数 | {days} 天 |\n"
+                f"| 日均用电 | {avg:,.1f} kWh |\n"
+                f"| 最低 / 最高 | {mn:,.1f} / {mx:,.1f} kWh |\n"
+                f"| 数据范围 | {first} ~ {last} |\n\n"
+                "> 离线模式：SQL 与数据是真实的，结论由模板生成；简单查询不生成报告。"
+            )
+        )
+
+    return ScriptedLLM(
+        [
+            assistant(tool_calls=[tool_call("inspect_schema", {"table": "energy_record"})]),
+            assistant(tool_calls=[tool_call("run_sql", {"sql": sql, "purpose": f"{workshop_name}{label}用电汇总"})]),
+            answer,
+        ]
+    )
+
+
+def mock_for(task: str) -> ScriptedLLM:
+    """离线演示按问题选剧本；避免"问什么都返回同一份报告"。"""
+    text = task or ""
+    if any(k in text for k in ("三号车间", "WS-03", "WS03")) and any(
+        k in text for k in ("电耗", "空转", "原因", "为什么", "调查")
+    ):
+        return mock_investigation()
+    if _parse_workshop(text) and any(k in text for k in ("用电", "电耗", "能耗", "电量")):
+        return _electricity_summary(text)
+    return ScriptedLLM(
+        [
+            assistant(
+                content=(
+                    "【离线演示】当前是脚本化模型，只内置了用电/能耗类取数脚本，"
+                    "以及“三号车间单位电耗异常”调查剧本。\n\n"
+                    "这个问题需要真实模型：关闭左下角「离线演示」后重试。"
+                )
+            )
         ]
     )

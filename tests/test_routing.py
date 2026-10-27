@@ -7,6 +7,7 @@ import pytest
 from opspilot.core.loop import AgentLoop
 from opspilot.core.routing import TaskProfile, classify_task
 from opspilot.core.types import RunStatus
+from opspilot.demo_scripts import mock_for
 from opspilot.harness.state import StateStore
 from opspilot.llm.mock import ScriptedLLM, assistant, tool_call
 
@@ -64,3 +65,21 @@ async def test_investigation_task_gets_full_budget(settings, state_store, regist
     result = await loop.run("三号车间电耗为什么升高？")
     assert result.profile == "investigation"
     assert result.budget["max_steps"] == settings.max_steps
+
+
+async def test_offline_mock_simple_query_produces_no_report(settings, state_store, registry):
+    task = "看一下二号车间这个月的用电情况"
+    loop = AgentLoop(mock_for(task), settings=settings, state=state_store, registry=registry)
+    result = await loop.run(task)
+    assert result.status is RunStatus.COMPLETED
+    assert result.report is None, "简单查询不应该生成报告"
+    assert result.budget["tool_calls"] == 2
+
+
+async def test_offline_mock_investigation_produces_report(settings, state_store, registry):
+    task = "三号车间单位产品电耗为什么升高？"
+    loop = AgentLoop(mock_for(task), settings=settings, state=state_store, registry=registry)
+    result = await loop.run(task)
+    assert result.status is RunStatus.COMPLETED
+    assert result.report is not None
+    assert "三号车间" in result.report["title"]

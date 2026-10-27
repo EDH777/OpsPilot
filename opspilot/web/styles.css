@@ -432,6 +432,7 @@ button { font: inherit; cursor: pointer; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .report-item .ri-meta { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+.report-item .dup { color: var(--warn); }
 .report-detail { min-width: 0; }
 
 @media (max-width: 1180px) {

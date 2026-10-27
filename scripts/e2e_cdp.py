@@ -94,7 +94,7 @@ async def main() -> None:
             await js(
                 ws,
                 counter,
-                "(() => { const i = document.querySelector('#input'); i.value = '看一下二号车间这个月的用电情况';"
+                "(() => { const i = document.querySelector('#input'); i.value = '三号车间单位产品电耗为什么升高？';"
                 " document.querySelector('#send').click(); return true; })()",
             )
             assert await wait_for(ws, counter, "!!document.querySelector('.activity-footer')"), "第一轮未完成"
@@ -115,7 +115,7 @@ async def main() -> None:
             await js(
                 ws,
                 counter,
-                "(() => { const i = document.querySelector('#input'); i.value = '那看一下9月份的';"
+                "(() => { const i = document.querySelector('#input'); i.value = '看一下二号车间这个月的用电情况';"
                 " document.querySelector('#send').click(); return true; })()",
             )
             assert await wait_for(
@@ -210,7 +210,7 @@ async def main() -> None:
             assert "第 1 轮" in hist["banner"], f"提示条应包含轮次，实际 {hist['banner']!r}"
             assert latest["bannerHidden"] is True and "最新运行" in latest["meta"], "点最新气泡应回到最新运行"
             assert restored["users"] == 2 and restored["bubbles"] == 2, "重开会话未恢复两轮对话"
-            assert "9月份" in restored["lastUser"], "恢复的对话最后一条不是第二轮问题"
+            assert "二号车间" in restored["lastUser"], "恢复的对话最后一条不是第二轮问题"
             assert any("第 1 轮" in x for x in restored["footLabels"]), "恢复后气泡未标注轮次"
             print("E2E 通过")
     finally:

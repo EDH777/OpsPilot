@@ -13,7 +13,7 @@ import sys
 
 from opspilot.config import get_settings
 from opspilot.core.loop import AgentLoop
-from opspilot.demo_scripts import mock_error_recovery, mock_investigation
+from opspilot.demo_scripts import mock_error_recovery, mock_for, mock_investigation
 from opspilot.llm import build_llm
 from opspilot.llm.base import LLMError
 
@@ -91,11 +91,13 @@ def _print_report(result) -> None:
 
 async def _main(args: argparse.Namespace) -> int:
     settings = get_settings()
-    demo = args.demo or ("investigation" if args.mock else None)
-    if demo == "recovery":
+    task = args.task or DEFAULT_TASK
+    if args.demo == "recovery":
         llm = mock_error_recovery()
-    elif demo == "investigation":
+    elif args.demo == "investigation":
         llm = mock_investigation()
+    elif args.mock:
+        llm = mock_for(task)
     else:
         try:
             llm = build_llm(settings)
@@ -104,7 +106,6 @@ async def _main(args: argparse.Namespace) -> int:
             return 2
 
     loop = AgentLoop(llm, settings=settings)
-    task = args.task or DEFAULT_TASK
     try:
         result = await loop.run(task, emit=_print_event)
     finally:

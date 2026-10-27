@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 CONFIDENCE_ICON = {"已验证事实": "✅", "证据支持": "◐", "待核实": "○"}
+
+
+def dedupe_reports(rows: list[dict[str, Any]], limit: int | None = None) -> list[dict[str, Any]]:
+    """内容相同的报告只保留最新一份，并标注出现次数。
+
+    背景：报告是"每轮 run 一份"的快照；同一段对话里重复问同一个问题、
+    或离线演示反复跑同一剧本，会产生多份内容完全相同的报告。
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        report = row.get("report") or {}
+        # charts 里是每次运行各自的沙箱路径（py_xxx/xxx.png），不参与内容比较
+        normalized = {k: v for k, v in report.items() if k != "charts"}
+        key = json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str)
+        if key not in grouped:
+            grouped[key] = {**row, "duplicates": 1, "run_ids": [row.get("run_id")]}
+            order.append(key)
+        else:
+            grouped[key]["duplicates"] += 1
+            grouped[key]["run_ids"].append(row.get("run_id"))
+    result = [grouped[key] for key in order]
+    return result[:limit] if limit else result
 
 
 def report_to_markdown(report: dict[str, Any], *, run_meta: dict[str, Any] | None = None) -> str:

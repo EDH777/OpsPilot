@@ -636,6 +636,7 @@ async function sendMessage(text) {
     $("#live-dot").classList.remove("on");
     clearThinking();
     loadSessions();
+    loadReports(false);
   }
 }
 
@@ -1188,9 +1189,9 @@ async function openRun(runId) {
   }
 }
 
-async function loadReports() {
+async function loadReports(autoSelect = true) {
   try {
-    const r = await fetch("/api/reports");
+    const r = await fetch("/api/reports", { cache: "no-store" });
     const data = await r.json();
     state.reports = data.reports || [];
     const el = $("#report-list");
@@ -1199,17 +1200,20 @@ async function loadReports() {
       return;
     }
     el.innerHTML = state.reports
-      .map(
-        (rep) => `<button class="report-item" data-run="${rep.run_id}">
-          <div class="ri-title">${esc(rep.title || rep.task || "调查报告")}</div>
-          <div class="ri-meta">${relTime(rep.created_at)} · ${statusText(rep.status)}</div>
-        </button>`
-      )
+      .map((rep) => {
+        const title = (rep.report && rep.report.title) || rep.title || rep.task || "调查报告";
+        return `<button class="report-item" data-run="${rep.run_id}">
+          <div class="ri-title">${esc(title)}</div>
+          <div class="ri-meta">${relTime(rep.created_at)} · ${statusText(rep.status)}${
+            rep.duplicates > 1 ? ` · <span class="dup">同内容 ${rep.duplicates} 份</span>` : ""
+          }</div>
+        </button>`;
+      })
       .join("");
     $$(".report-item", el).forEach((btn) =>
       btn.addEventListener("click", () => showReport(btn.dataset.run))
     );
-    showReport(state.reports[0].run_id);
+    if (autoSelect) showReport(state.reports[0].run_id);
   } catch (e) {
     console.error(e);
   }

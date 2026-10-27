@@ -19,14 +19,14 @@ from pydantic import BaseModel, Field
 from opspilot import __version__
 from opspilot.config import get_settings
 from opspilot.core.loop import AgentLoop
-from opspilot.demo_scripts import mock_investigation
+from opspilot.demo_scripts import mock_for
 from opspilot.harness.state import StateStore
 from opspilot.harness.tracing import Tracer
 from opspilot.llm import build_llm
 from opspilot.llm.base import LLMError
 from opspilot.services.analytics import dashboard_overview
 from opspilot.services.data_version import data_signature
-from opspilot.services.reporting import report_to_markdown
+from opspilot.services.reporting import dedupe_reports, report_to_markdown
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 settings = get_settings()
@@ -208,8 +208,11 @@ async def session_detail(session_id: str, limit: int = Query(default=200, ge=1, 
 
 
 @app.get("/api/reports")
-async def list_reports(limit: int = Query(default=50, ge=1, le=200)):
-    return {"reports": app.state.store.list_reports(limit=limit)}
+async def list_reports(limit: int = Query(default=50, ge=1, le=200), dedupe: bool = True):
+    rows = app.state.store.list_reports(limit=200)
+    if not dedupe:
+        return {"reports": rows[:limit]}
+    return {"reports": dedupe_reports(rows, limit=limit)}
 
 
 @app.get("/api/runs/{run_id}")
@@ -254,7 +257,7 @@ async def chat(req: ChatRequest):
     if not req.mock and not settings.has_llm:
         raise HTTPException(400, "未配置 OPSPILOT_LLM_API_KEY；可在界面上选择离线演示模式")
 
-    llm = mock_investigation() if req.mock else build_llm(settings)
+    llm = mock_for(req.message) if req.mock else build_llm(settings)
     loop = AgentLoop(llm, settings=settings, state=app.state.store)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
@@ -306,7 +309,7 @@ async def resume_run(run_id: str, req: ResumeRequest):
     row = app.state.store.load(run_id)
     if not row:
         raise HTTPException(404, "run 不存在")
-    llm = mock_investigation() if req.mock else build_llm(settings)
+    llm = mock_for(row.get("task") or "") if req.mock else build_llm(settings)
     loop = AgentLoop(llm, settings=settings, state=app.state.store)
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
 
