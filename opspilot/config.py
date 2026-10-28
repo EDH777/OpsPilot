@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +46,6 @@ class Settings(BaseSettings):
     simple_max_tokens: int = 80_000
     simple_max_seconds: float = 300.0
     simple_context_token_budget: int = 16_000
-    sql_max_rows: int = 500
     sql_preview_rows: int = 20
     sql_summary_threshold: int = 50
     sql_timeout_s: float = 20.0
@@ -65,11 +63,21 @@ class Settings(BaseSettings):
     # ---- 服务 ----
     host: str = "127.0.0.1"
     port: int = 8100
-    cors_origins: str = "*"
+
+    # ---- 演示级认证 / 权限 ----
+    # 生产必须配置 OPSPILOT_SESSION_SECRET；未配置时仅进程内随机兜底。
+    session_secret: str = ""
+    demo_password: str = "OpsPilot@2026"
+    cookie_secure: bool = False
+    allowed_origins: str = "http://127.0.0.1:8100,http://localhost:8100"
 
     @property
     def has_llm(self) -> bool:
         return bool(self.llm_api_key)
+
+    @property
+    def allowed_origin_list(self) -> list[str]:
+        return [item.strip() for item in self.allowed_origins.split(",") if item.strip()]
 
 
 _settings: Settings | None = None

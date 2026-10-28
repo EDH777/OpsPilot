@@ -8,12 +8,16 @@
 
 from __future__ import annotations
 
+import json
+import re
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
+from opspilot.security.model import ROLES
 
 
 class Finding(BaseModel):
@@ -58,6 +62,54 @@ async def submit_report(args: SubmitReportArgs, ctx: ToolContext) -> dict[str, A
     produced = [p for p in ctx.shared.get("artifacts", []) if p.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp"))]
     if not payload.get("charts") and produced:
         payload["charts"] = produced[:6]
+
+    # 服务端盖章：owner/scope 不能由模型决定
+    payload["_meta"] = {
+        "run_id": ctx.run_id,
+        "owner": {
+            "user_id": ctx.principal.user_id,
+            "name": ctx.principal.display_name,
+            "role": ctx.principal.role,
+            "role_label": ROLES[ctx.principal.role].label,
+        },
+        "scope": {
+            "workshops": ctx.principal.as_scope(),
+            "label": ctx.principal.scope_label,
+        },
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "data_note": "模拟数据；成本为合成值，不构成真实财务结论。",
+    }
+
+    # 越界车间编号检测：只扫描结论字段，不扫描 limitations
+    scan = {k: payload.get(k) for k in ("summary", "metrics", "findings", "recommendations")}
+    mentioned = set(re.findall(r"WS-\d{2}", json.dumps(scan, ensure_ascii=False)))
+    outside = {w for w in mentioned if not ctx.principal.allows(w)}
+    if outside:
+        ctx.audit.record(
+            action="report.submit",
+            decision="deny",
+            user_id=ctx.principal.user_id,
+            role=ctx.principal.role,
+            run_id=ctx.run_id,
+            reason="REPORT_SCOPE_VIOLATION",
+        )
+        raise ToolError(
+            ErrorKind.PERMISSION_DENIED,
+            "报告中包含你无权访问的车间数据",
+            hint="请只引用你实际查询到的内容；不确定的写进 limitations。",
+        )
+
+    payload["limitations"] = list(args.limitations) + [
+        f"数据范围：{ctx.principal.scope_label}；范围外数据未参与本次分析。"
+    ]
+    ctx.audit.record(
+        action="report.submit",
+        decision="allow",
+        user_id=ctx.principal.user_id,
+        role=ctx.principal.role,
+        run_id=ctx.run_id,
+        detail={"findings": len(args.findings), "scope": ctx.principal.as_scope()},
+    )
     ctx.shared["report"] = payload
     # 注意：这里不再 publish("report")。报告事件统一由 AgentLoop 在识别到
     # submit_report 成功后发一次，避免同一份报告在 UI 中出现两张卡片。

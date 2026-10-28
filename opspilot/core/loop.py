@@ -29,7 +29,7 @@ from opspilot.core.types import (
     Usage,
     new_id,
 )
-from opspilot.domain.prompts import build_system_prompt
+from opspilot.core.prompts import build_scope_prompt, build_system_prompt
 from opspilot.harness.budget import Budget, BudgetExceeded
 from opspilot.harness.context import ContextManager
 from opspilot.harness.executor import ToolExecutor
@@ -37,6 +37,8 @@ from opspilot.harness.registry import ToolContext, ToolRegistry, build_default_r
 from opspilot.harness.state import StateStore
 from opspilot.harness.tracing import Tracer
 from opspilot.llm.base import BaseLLM, LLMError
+from opspilot.security.audit import AuditLog
+from opspilot.security.model import Principal
 
 EventCallback = Callable[[Event], None]
 
@@ -129,6 +131,7 @@ class AgentLoop:
         state: StateStore | None = None,
         executor: ToolExecutor | None = None,
         context: ContextManager | None = None,
+        audit: AuditLog | None = None,
     ) -> None:
         self.llm = llm
         self.settings = settings or get_settings()
@@ -136,6 +139,7 @@ class AgentLoop:
         self.state = state or StateStore(self.settings.state_db_path)
         self.executor = executor or ToolExecutor(self.registry, default_timeout_s=self.settings.tool_timeout_s)
         self.context = context
+        self.audit = audit or AuditLog(self.settings.runs_dir)
 
     # ------------------------------------------------------------------ 分级预算
 
@@ -168,6 +172,7 @@ class AgentLoop:
         self,
         task: str,
         *,
+        principal: Principal,
         session_id: str | None = None,
         run_id: str | None = None,
         emit: EventCallback | None = None,
@@ -176,8 +181,11 @@ class AgentLoop:
         session_id = session_id or new_id("sess_")
         profile = classify_task(task)
 
-        messages = [Message(role=Role.SYSTEM, content=build_system_prompt(mode=profile.value))]
-        history = self._history_messages(session_id)
+        messages = [
+            Message(role=Role.SYSTEM, content=build_system_prompt(mode=profile.value)),
+            Message(role=Role.SYSTEM, name="harness_scope", content=build_scope_prompt(principal)),
+        ]
+        history = self._history_messages(session_id, principal)
         if history:
             messages.append(Message(role=Role.SYSTEM, name="harness_history", content=HISTORY_NOTE))
             messages.extend(history)
@@ -195,12 +203,17 @@ class AgentLoop:
             emit=emit,
             context=context,
             profile=profile,
+            principal=principal,
         )
 
-    def _history_messages(self, session_id: str, *, max_chars: int = 2400) -> list[Message]:
+    def _history_messages(
+        self, session_id: str, principal: Principal, *, max_chars: int = 2400
+    ) -> list[Message]:
         """把同一会话此前轮次的「提问 + 结论摘要」拼回上下文，控制总量。"""
         try:
-            rows = self.state.session_history(session_id, limit=4)
+            rows = self.state.session_history(
+                session_id, limit=4, owner_user_id=principal.user_id
+            )
         except Exception:  # noqa: BLE001 - 历史不可用不应阻断新任务
             return []
 
@@ -227,9 +240,11 @@ class AgentLoop:
             messages.append(Message(role=Role.ASSISTANT, content=summary_text or "（本轮已完成，无文字结论）"))
         return messages
 
-    async def resume(self, run_id: str, *, emit: EventCallback | None = None) -> RunResult:
+    async def resume(
+        self, run_id: str, *, principal: Principal, emit: EventCallback | None = None
+    ) -> RunResult:
         row = self.state.load(run_id)
-        if not row:
+        if not row or row.get("owner_user_id") != principal.user_id:
             raise ValueError(f"找不到运行记录 {run_id}")
         if row.get("status") not in {
             RunStatus.RUNNING.value,
@@ -260,6 +275,7 @@ class AgentLoop:
             context=context,
             profile=profile,
             resumed=True,
+            principal=principal,
         )
 
     # ------------------------------------------------------------------ 主循环
@@ -276,6 +292,7 @@ class AgentLoop:
         emit: EventCallback | None,
         context: ContextManager,
         profile: TaskProfile,
+        principal: Principal,
         resumed: bool = False,
     ) -> RunResult:
         tracer = Tracer(run_id, self.settings.runs_dir)
@@ -304,6 +321,8 @@ class AgentLoop:
 
         ctx = ToolContext(
             run_id=run_id,
+            principal=principal,
+            audit=self.audit,
             settings=self.settings,
             artifacts_dir=tracer.artifacts_dir,
             emit=tool_publish,
@@ -326,6 +345,16 @@ class AgentLoop:
             messages=[m.to_dict() for m in messages],
             usage=usage.to_dict(),
             step=budget.steps,
+            owner_user_id=principal.user_id,
+            owner_role=principal.role,
+        )
+        self.audit.record(
+            action="run.start",
+            decision="allow",
+            user_id=principal.user_id,
+            role=principal.role,
+            run_id=run_id,
+            detail={"scope": principal.as_scope(), "profile": profile.value},
         )
         publish(
             EventType.RUN_STARTED,
@@ -333,10 +362,13 @@ class AgentLoop:
             session_id=session_id,
             resumed=resumed,
             model=self.llm.model_name,
-            tools=self.registry.names(),
+            tools=self.registry.names_for(principal),
             budget=budget.snapshot(),
             profile=profile.value,
             profile_label=profile.label,
+            owner_user_id=principal.user_id,
+            owner_role=principal.role,
+            scope=principal.as_scope(),
         )
 
         try:

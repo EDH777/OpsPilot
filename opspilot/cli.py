@@ -16,6 +16,7 @@ from opspilot.core.loop import AgentLoop
 from opspilot.demo_scripts import mock_error_recovery, mock_for, mock_investigation
 from opspilot.llm import build_llm
 from opspilot.llm.base import LLMError
+from opspilot.security.auth import principal_for
 
 DEFAULT_TASK = "最近一个月，三号车间的单位产品电耗明显增加，但产量没有明显变化。请调查原因，并给出证据和改进建议。"
 
@@ -105,9 +106,10 @@ async def _main(args: argparse.Namespace) -> int:
             print(f"无法初始化模型：{exc}", file=sys.stderr)
             return 2
 
+    principal = principal_for(args.as_user)
     loop = AgentLoop(llm, settings=settings)
     try:
-        result = await loop.run(task, emit=_print_event)
+        result = await loop.run(task, principal=principal, emit=_print_event)
     finally:
         await llm.aclose()
 
@@ -128,6 +130,13 @@ def main() -> None:
         help="离线演示场景：investigation=完整调查，recovery=工具报错与恢复",
     )
     parser.add_argument("--json", action="store_true", help="输出完整 JSON 结果")
+    parser.add_argument(
+        "--as",
+        dest="as_user",
+        default="boss",
+        choices=["boss", "zhaolei", "sunhao"],
+        help="以哪个演示身份运行（本地 CLI 可信；Web 端必须登录）",
+    )
     args = parser.parse_args()
     sys.exit(asyncio.run(_main(args)))
 

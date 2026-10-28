@@ -30,7 +30,7 @@ opspilot = "opspilot.cli:main"
 include = ["opspilot*"]
 
 [tool.setuptools.package-data]
-opspilot = ["web/*"]
+opspilot = ["frontend/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

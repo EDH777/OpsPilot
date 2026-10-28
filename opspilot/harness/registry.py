@@ -13,6 +13,8 @@ from typing import Any, Awaitable, Callable, Iterable
 from pydantic import BaseModel
 
 from opspilot.config import Settings
+from opspilot.security.audit import AuditLog
+from opspilot.security.model import Principal, ROLES
 
 ToolHandler = Callable[[Any, "ToolContext"], Awaitable[Any]]
 Emitter = Callable[[str, dict[str, Any]], None]
@@ -23,6 +25,8 @@ class ToolContext:
     """一次运行内传给工具的上下文（不包含任何凭证之外的全局状态）。"""
 
     run_id: str
+    principal: Principal
+    audit: AuditLog
     settings: Settings
     artifacts_dir: Path
     emit: Emitter | None = None
@@ -141,13 +145,9 @@ class ToolRegistry:
     def openai_tools(self, names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         return [s.openai_schema() for s in self.specs(names)]
 
-    def catalog_text(self) -> str:
-        """给提示词用的工具目录（模型通常已从 tools 参数获得，这里用于降级/文档）。"""
-        lines = []
-        for spec in self.specs():
-            flag = "只读" if spec.read_only else "写入"
-            lines.append(f"- {spec.name}（{flag}）：{spec.description.splitlines()[0]}")
-        return "\n".join(lines)
+    def names_for(self, principal: Principal) -> list[str]:
+        allowed = ROLES[principal.role].tools
+        return sorted(name for name in allowed if name in self._specs)
 
 
 def build_default_registry() -> ToolRegistry:

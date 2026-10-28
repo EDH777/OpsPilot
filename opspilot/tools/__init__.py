@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from opspilot.harness.registry import ToolRegistry, ToolSpec
-from opspilot.tools import api, artifacts, python_tool, report, schema, sql
+from opspilot.tools import api, artifacts, cost, python_tool, report, schema, sql
 
 
 def register_all(registry: ToolRegistry) -> ToolRegistry:
@@ -118,6 +118,18 @@ def register_all(registry: ToolRegistry) -> ToolRegistry:
             timeout_s=10,
             max_retries=0,
             tags=("finish",),
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="query_cost_summary",
+            description=cost.DESCRIPTION,
+            args_model=cost.CostQueryArgs,
+            handler=cost.query_cost_summary,
+            read_only=True,
+            timeout_s=30,
+            max_retries=0,
+            tags=("cost", "finance"),
         )
     )
     return registry

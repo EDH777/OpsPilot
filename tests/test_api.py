@@ -12,12 +12,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from opspilot.api.app import app
-from opspilot.services.data_version import data_signature
+from opspilot.modules.dashboard.data_version import data_signature
 
 
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:
+        resp = c.post(
+            "/api/auth/login",
+            json={"username": "boss", "password": "OpsPilot@2026"},
+        )
+        assert resp.status_code == 200, resp.text
         yield c
 
 

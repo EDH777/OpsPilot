@@ -102,6 +102,16 @@ CREATE TABLE alarm_code (
     description   VARCHAR,
     typical_cause VARCHAR
 );
+
+CREATE TABLE workshop_cost (
+    month            VARCHAR,
+    workshop_id      VARCHAR,
+    electricity_cost DOUBLE,
+    total_cost       DOUBLE,
+    revenue          DOUBLE,
+    gross_margin     DOUBLE,
+    unit_price       DOUBLE
+);
 """
 
 
@@ -173,6 +183,11 @@ def _weekday_factor(d: date) -> float:
 def _season_temp(d: date) -> float:
     # 夏季偏热，用于空调/冷却负荷
     return 22.0 + 9.0 * math.sin(2 * math.pi * (d.timetuple().tm_yday - 100) / 365)
+
+
+def _energy_price(d: date) -> float:
+    """10 月电价上调 6%，制造“用量 + 价格”双因素故事。"""
+    return 0.68 * (1.06 if d >= date(2026, 10, 1) else 1.0)
 
 
 def build(force: bool = True) -> Path:
@@ -261,7 +276,7 @@ def build(force: bool = True) -> Path:
             # 电表 = 设备用电 × 厂务公摊(约8%)
             electricity = equip_energy * 1.08 * _jitter(rng, 0.02)
             if day not in MISSING_ENERGY_DAYS or ws.workshop_id != "WS-02":
-                energy_rows.append((day, ws.workshop_id, "electricity", round(electricity, 1), "kWh", round(electricity * 0.68, 2)))
+                energy_rows.append((day, ws.workshop_id, "electricity", round(electricity, 1), "kWh", round(electricity * _energy_price(day), 2)))
             energy_rows.append((day, ws.workshop_id, "water", round(18 + ws.area_m2 / 1000 * 2 + rng.uniform(-2, 2), 1), "t", 0.0))
             if ws.workshop_id == "WS-05":
                 gas = 900 + 0.45 * ws.base_output + rng.uniform(-40, 40)
@@ -348,10 +363,43 @@ def build(force: bool = True) -> Path:
         day += timedelta(days=1)
         day_index += 1
 
+    # ---- 月度成本（只给总经理看；由电量 × 电价推导，保证与 energy_record 一致）----
+    months = sorted(
+        {row[0].strftime("%Y-%m") for row in energy_rows if row[2] == "electricity"}
+    )
+    cost_rows: list[tuple] = []
+    for month in months:
+        for ws in WORKSHOPS:
+            rows = [
+                row
+                for row in energy_rows
+                if row[2] == "electricity"
+                and row[0].strftime("%Y-%m") == month
+                and row[1] == ws.workshop_id
+            ]
+            kwh = sum(row[3] for row in rows)
+            cost = sum(row[5] for row in rows)
+            if not kwh:
+                continue
+            total = cost * 3.2
+            revenue = total * 1.12
+            cost_rows.append(
+                (
+                    month,
+                    ws.workshop_id,
+                    round(cost, 2),
+                    round(total, 2),
+                    round(revenue, 2),
+                    round((revenue - total) / revenue, 4),
+                    round(cost / kwh, 4),
+                )
+            )
+
     con.executemany("INSERT INTO production_record VALUES (?, ?, ?, ?, ?, ?, ?)", production_rows)
     con.executemany("INSERT INTO energy_record VALUES (?, ?, ?, ?, ?, ?)", energy_rows)
     con.executemany("INSERT INTO equipment_operation VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", operation_rows)
     con.executemany("INSERT INTO equipment_alarm VALUES (?, ?, ?, ?, ?, ?, ?, ?)", alarm_rows)
+    con.executemany("INSERT INTO workshop_cost VALUES (?, ?, ?, ?, ?, ?, ?)", cost_rows)
 
     _verify(con)
     con.close()
@@ -366,14 +414,14 @@ def _verify(con: duckdb.DuckDBPyConnection) -> None:
         FROM energy_record WHERE energy_type = 'electricity'
         GROUP BY 1, 2
     ), p AS (
-        SELECT workshop_id, record_date, SUM(output_qty) AS qty
+        SELECT workshop_id, record_date, SUM(output_qty - defect_qty) AS qty
         FROM production_record GROUP BY 1, 2
     )
     SELECT e.workshop_id,
-           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-08-28' AND DATE '2026-09-26' THEN e.kwh / NULLIF(p.qty,0) END), 3) AS base_unit,
-           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-09-27' AND DATE '2026-10-26' THEN e.kwh / NULLIF(p.qty,0) END), 3) AS curr_unit,
-           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-08-28' AND DATE '2026-09-26' THEN p.qty END), 1) AS base_qty,
-           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-09-27' AND DATE '2026-10-26' THEN p.qty END), 1) AS curr_qty
+           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-08-29' AND DATE '2026-09-27' THEN e.kwh / NULLIF(p.qty,0) END), 3) AS base_unit,
+           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-09-28' AND DATE '2026-10-20' THEN e.kwh / NULLIF(p.qty,0) END), 3) AS curr_unit,
+           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-08-29' AND DATE '2026-09-27' THEN p.qty END), 1) AS base_qty,
+           ROUND(AVG(CASE WHEN e.record_date BETWEEN DATE '2026-09-28' AND DATE '2026-10-20' THEN p.qty END), 1) AS curr_qty
     FROM e JOIN p USING (workshop_id, record_date)
     GROUP BY 1 ORDER BY 1
     """
@@ -385,7 +433,15 @@ def _verify(con: duckdb.DuckDBPyConnection) -> None:
             f"  {ws_id}: 单位电耗 {base_unit} → {curr_unit} kWh/件 ({delta:+.1f}%)，"
             f"日均产量 {base_qty} → {curr_qty}"
         )
-    for table in ("workshop", "production_record", "energy_record", "equipment", "equipment_operation", "equipment_alarm"):
+    for table in (
+        "workshop",
+        "production_record",
+        "energy_record",
+        "equipment",
+        "equipment_operation",
+        "equipment_alarm",
+        "workshop_cost",
+    ):
         count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"  {table:22s} {count:6d} 行")
 

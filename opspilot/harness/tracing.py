@@ -31,12 +31,6 @@ class Tracer:
                 fh.write(line + "\n")
                 fh.flush()
 
-    def write_artifact(self, name: str, text: str) -> Path:
-        path = self.artifacts_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-        return path
-
     # ---- 静态读取（UI / 回放）----
 
     @staticmethod

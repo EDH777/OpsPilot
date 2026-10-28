@@ -17,7 +17,7 @@ from datetime import date, datetime
 from typing import Any
 
 import duckdb
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from opspilot.config import get_settings
@@ -77,6 +77,13 @@ def _check_range(start: date, end: date) -> JSONResponse | None:
     return None
 
 
+def _require_token(request: Request) -> None:
+    """可选的静态服务令牌；工具层已做 workshop scope 收敛。"""
+    expected = get_settings().business_api_token
+    if expected and request.headers.get("Authorization") != f"Bearer {expected}":
+        raise HTTPException(401, "missing business api token")
+
+
 def _meta(request: Request, **extra: Any) -> dict[str, Any]:
     return {
         "query_id": f"q_{uuid.uuid4().hex[:10]}",
@@ -92,7 +99,8 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/api/v1/workshops")
-def workshops() -> dict[str, Any]:
+def workshops(request: Request) -> dict[str, Any]:
+    _require_token(request)
     con = _connect()
     try:
         rows = con.execute(
@@ -116,6 +124,7 @@ def equipment_operations(
     end_date: str = Query(..., description="YYYY-MM-DD"),
     equipment_type: str | None = Query(default=None),
 ) -> Any:
+    _require_token(request)
     start = _parse_date(start_date, "start_date")
     if isinstance(start, JSONResponse):
         return start
@@ -174,6 +183,7 @@ def equipment_alarms(
     end_date: str = Query(...),
     severity: str | None = Query(default=None),
 ) -> Any:
+    _require_token(request)
     start = _parse_date(start_date, "start_date")
     if isinstance(start, JSONResponse):
         return start
@@ -226,6 +236,7 @@ def production_summary(
     month: str = Query(..., description="YYYY-MM"),
     workshop_id: str | None = Query(default=None),
 ) -> Any:
+    _require_token(request)
     try:
         if len(month) != 7:
             raise ValueError
@@ -277,7 +288,8 @@ def production_summary(
 
 
 @app.get("/api/v1/alarm-codes")
-def alarm_codes() -> dict[str, Any]:
+def alarm_codes(request: Request) -> dict[str, Any]:
+    _require_token(request)
     con = _connect()
     try:
         rows = con.execute("SELECT code, name, description, typical_cause FROM alarm_code ORDER BY 1").fetchall()
@@ -293,7 +305,6 @@ def alarm_codes() -> dict[str, Any]:
 def main() -> None:
     import uvicorn
 
-    settings = get_settings()
     uvicorn.run(app, host="127.0.0.1", port=8101, log_level="info")
 
 

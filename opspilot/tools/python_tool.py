@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
 from opspilot.harness.sandbox import PythonSandbox
+from opspilot.security.data import ensure_scoped_snapshot
 
 
 class PythonAnalysisArgs(BaseModel):
@@ -30,15 +31,16 @@ class PythonAnalysisArgs(BaseModel):
 DESCRIPTION = (
     "在隔离沙箱中执行 Python 代码，用于复杂计算、统计检验与绘图（保存 png 后会自动登记为报告图表）。"
     "代码无网络访问；stdout/stderr 会返回，出错可根据 traceback 修正后重试。"
-    "读取数据库必须用：import os, duckdb; "
+    "数据库是当前账号的授权快照，读取方式：import os, duckdb; "
     "con = duckdb.connect(os.environ['OPSPILOT_DB_PATH'], read_only=True)。"
-    "不要硬编码任何数据库路径，也不要用 /home、/tmp 等 Linux 路径。"
+    "快照里只有你有权访问的车间和字段；不要硬编码任何数据库路径，也不要用 /home、/tmp 等 Linux 路径。"
 )
 
 
 async def python_analysis(args: PythonAnalysisArgs, ctx: ToolContext) -> dict[str, Any]:
     sandbox = PythonSandbox(ctx.settings)
-    result = await sandbox.run(args.code, artifacts_dir=ctx.artifacts_dir)
+    snapshot = ensure_scoped_snapshot(ctx)
+    result = await sandbox.run(args.code, artifacts_dir=ctx.artifacts_dir, db_path=snapshot)
     data = result.to_dict()
     data["purpose"] = args.purpose
 

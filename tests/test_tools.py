@@ -8,12 +8,19 @@ import pytest
 
 from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
+from opspilot.security.data import validate_readonly_sql
 from opspilot.tools import api, artifacts, python_tool, report, schema, sql
 
 
 @pytest.fixture
-def ctx(settings, tmp_path: Path) -> ToolContext:
-    ctx = ToolContext(run_id="run_tools", settings=settings, artifacts_dir=tmp_path / "artifacts")
+def ctx(settings, tmp_path: Path, principal, audit) -> ToolContext:
+    ctx = ToolContext(
+        run_id="run_tools",
+        principal=principal,
+        audit=audit,
+        settings=settings,
+        artifacts_dir=tmp_path / "artifacts",
+    )
     ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
     return ctx
 
@@ -219,7 +226,7 @@ async def test_submit_report_fills_charts_from_artifacts(ctx):
 
 def test_sql_validator_classifies_permission_error():
     with pytest.raises(Exception) as exc:
-        sql.validate_readonly_sql("DROP TABLE x")
+        validate_readonly_sql("DROP TABLE x")
     err = exc.value
     assert getattr(err, "kind", None) is ErrorKind.PERMISSION_DENIED
 

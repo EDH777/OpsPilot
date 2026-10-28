@@ -42,12 +42,14 @@ def test_profile_budgets(settings, registry, tmp_path):
     assert loop._context_budget(TaskProfile.SIMPLE) < loop._context_budget(TaskProfile.INVESTIGATION)
 
 
-async def test_simple_task_is_stopped_by_simple_budget(settings, state_store, registry):
+async def test_simple_task_is_stopped_by_simple_budget(
+    settings, state_store, registry, principal
+):
     tight = settings.model_copy(update={"simple_max_steps": 2})
     script = [assistant(tool_calls=[tool_call("inspect_schema", {})]) for _ in range(6)]
     loop = AgentLoop(ScriptedLLM(script), settings=tight, state=state_store, registry=registry)
 
-    result = await loop.run("看一下二号车间这个月的用电情况")
+    result = await loop.run("看一下二号车间这个月的用电情况", principal=principal)
 
     assert result.profile == "simple"
     assert result.status is RunStatus.BUDGET_EXCEEDED
@@ -55,43 +57,49 @@ async def test_simple_task_is_stopped_by_simple_budget(settings, state_store, re
     assert result.budget["max_steps"] == 2
 
 
-async def test_investigation_task_gets_full_budget(settings, state_store, registry):
+async def test_investigation_task_gets_full_budget(settings, state_store, registry, principal):
     loop = AgentLoop(
         ScriptedLLM([assistant(content="直接回答")]),
         settings=settings,
         state=state_store,
         registry=registry,
     )
-    result = await loop.run("三号车间电耗为什么升高？")
+    result = await loop.run("三号车间电耗为什么升高？", principal=principal)
     assert result.profile == "investigation"
     assert result.budget["max_steps"] == settings.max_steps
 
 
-async def test_offline_mock_simple_query_produces_no_report(settings, state_store, registry):
+async def test_offline_mock_simple_query_produces_no_report(
+    settings, state_store, registry, principal
+):
     task = "看一下二号车间这个月的用电情况"
     loop = AgentLoop(mock_for(task), settings=settings, state=state_store, registry=registry)
-    result = await loop.run(task)
+    result = await loop.run(task, principal=principal)
     assert result.status is RunStatus.COMPLETED
     assert result.report is None, "简单查询不应该生成报告"
     assert result.budget["tool_calls"] == 2
 
 
-async def test_offline_mock_investigation_produces_report(settings, state_store, registry):
+async def test_offline_mock_investigation_produces_report(
+    settings, state_store, registry, principal
+):
     task = "三号车间单位产品电耗为什么升高？"
     loop = AgentLoop(mock_for(task), settings=settings, state=state_store, registry=registry)
-    result = await loop.run(task)
+    result = await loop.run(task, principal=principal)
     assert result.status is RunStatus.COMPLETED
     assert result.report is not None
     assert "三号车间" in result.report["title"]
 
 
-async def test_offline_mock_followup_resolves_workshop_from_history(settings, state_store, registry):
+async def test_offline_mock_followup_resolves_workshop_from_history(
+    settings, state_store, registry, principal
+):
     task = "那看一下9月份的"
     history = ["看一下二号车间这个月的用电情况"]
     loop = AgentLoop(
         mock_for(task, history), settings=settings, state=state_store, registry=registry
     )
-    result = await loop.run(task, session_id="sess_mock_ctx")
+    result = await loop.run(task, principal=principal, session_id="sess_mock_ctx")
     assert result.status is RunStatus.COMPLETED
     assert "二号车间" in (result.answer or "")
     assert "2026年9月" in (result.answer or "")

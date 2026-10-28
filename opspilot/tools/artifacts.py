@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
+from opspilot.tools._common import resolve_artifact
 
 _TEXT_SUFFIXES = {".txt", ".log", ".md", ".csv", ".json"}
 
@@ -29,14 +28,7 @@ DESCRIPTION = (
 
 
 async def read_artifact(args: ReadArtifactArgs, ctx: ToolContext) -> dict[str, Any]:
-    base = ctx.artifacts_dir.resolve()
-    path = (base / args.path).resolve()
-    if not path.is_relative_to(base):
-        raise ToolError(ErrorKind.PERMISSION_DENIED, "产物路径越界", hint="只能读取本 run 的产物")
-    if path.suffix.lower() not in _TEXT_SUFFIXES:
-        raise ToolError(ErrorKind.INVALID_ARGUMENT, f"不支持读取 {path.suffix} 类型，仅支持文本产物")
-    if not path.is_file():
-        raise ToolError(ErrorKind.NOT_FOUND, f"产物不存在：{args.path}", hint="先确认 python_analysis 返回的 artifacts/ref")
+    path = resolve_artifact(ctx, args.path, _TEXT_SUFFIXES)
 
     text = path.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from opspilot.core.types import now_ts
 
@@ -42,6 +42,3 @@ class Event:
             "ts": round(self.ts, 3),
             "data": self.data,
         }
-
-
-EventSink = Callable[[Event], "Awaitable[None] | None"]

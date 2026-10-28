@@ -2,7 +2,7 @@
 
 > 本文件是给后续 AI 编码助手（以及我自己）看的**项目上下文与工作约定**。
 > 每次开始新会话请先读完本文件，再动代码。
-> 最后更新：2026-10-27
+> 最后更新：2026-10-28
 
 ---
 
@@ -106,19 +106,22 @@ OpsPilot/
 ├── opspilot/
 │   ├── config.py            core/loop.py（★Loop） core/types.py core/events.py
 │   ├── harness/             registry / executor / errors / context / state / sandbox / tracing / budget
-│   ├── tools/               schema / sql / api / python_tool / report
-│   ├── domain/              metrics.py（指标口径） prompts.py（系统提示词）
-│   ├── services/            analytics.py（驾驶舱） reporting.py（Markdown 导出）
+│   ├── tools/               schema / sql / api / python_tool / report / cost
+│   ├── security/            model / auth / data / access / audit（★轻量权限）
+│   ├── modules/
+│   │   ├── dashboard/       analytics.py（驾驶舱） data_version.py
+│   │   ├── metrics/         definitions.py（指标口径） service.py（运行统计）
+│   │   └── reporting/       service.py（报告去重 / Markdown）
 │   ├── data/seed.py         模拟工厂数据（注入异常 + 干扰项 + 数据缺口）
 │   ├── mock_erp/app.py      模拟业务系统 :8101
 │   ├── api/app.py           FastAPI + SSE
-│   ├── web/                 index.html / app.js / styles.css（零构建、手写 SVG 图表）
+│   ├── frontend/            index.html / app.js / styles.css（零构建、手写 SVG 图表）
 │   └── cli.py
 ├── evals/                   tasks.json + run_eval.py + results/
-├── tests/                   88 个测试
-├── scripts/                 probe_llm / verify_data / check_env / check_web
+├── tests/                   104 个测试
+├── scripts/run_demo.py      一键启动；scripts/dev/ 放开发诊断脚本
 ├── data/  runs/             DuckDB 与运行产物（gitignore）
-└── docs/                    architecture.md + screenshots/
+└── docs/                    screenshots/；internal/ 放设计与规划
 ```
 
 ---
@@ -133,6 +136,18 @@ OpsPilot/
 4. **数据真实性**：数据是合成的；`inspect_schema` 与 README 都标注来源，不可宣称真实工厂因果。
 5. **一切可追溯**：每次模型调用、工具入参出参、异常、耗时进 Trace；报告数字可回指查询。
 6. **预算硬约束**：步数 / 工具数 / token / 墙钟时间；超限以结构化状态终止，不静默。
+7. **权限不靠提示词**：工具白名单 + 执行器二次校验 + 按角色 DuckDB 视图 +
+   Python scoped 快照 + 对象 owner + JSONL 审计；提示词只负责降低无效尝试。
+   详见 `docs/permission-rbac-lite.md`。
+
+### 6.5 轻量权限（2026-10-28 已落地）
+
+- 角色：`executive` 总经理（全厂 + 成本）、`workshop_manager` 车间管理员（仅本车间、无成本）；
+- 演示账号：`boss` / `zhaolei`(WS-03) / `sunhao`(WS-05)，密码 `OpsPilot@2026`；
+- 新增 `opspilot/security/`：`model.py` / `auth.py` / `data.py` / `access.py` / `audit.py`；
+- `runs` 新增 `owner_user_id` / `owner_role`（schema v3，老数据归 `u_boss`）；
+- 审计：`runs/audit.jsonl`；`GET /api/audit` 仅总经理可读；
+- 已知边界：签名 Cookie 是演示级、SQL guard 是词法级、subprocess 沙箱非强隔离。
 
 ---
 
@@ -169,14 +184,14 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 
 - [x] 自研 Agent Loop（Function Calling + ReAct + 预算 + 熔断 + 检查点 + 恢复）
 - [x] Harness 全部模块（注册/执行/错误/上下文/状态/沙箱/追踪/预算）
-- [x] 9 个业务工具 + 模拟 ERP（严格参数、结构化 400）
+- [x] 10 个业务工具（含总经理专属成本查询）+ 模拟 ERP（严格参数、结构化 400）
 - [x] 模拟工厂数据：WS-03 空压机空转导致 +13.2% 单位电耗；WS-05 干扰项；WS-02 数据缺口
 - [x] FastAPI + SSE + Web 工作台（驾驶舱 / 调查 / 报告中心 / Trace 回放 / Markdown 导出）
 - [x] 看板实时推送：`/api/dashboard/stream`，指纹（db+wal mtime/size）变化才重算，前端增量更新 + 版本号
 - [x] 任务分级：`core/routing.py` 区分简单查询/异常调查，分别给 6 步与 24 步预算、不同提示词
 - [x] `inspect_schema` 返回枚举列值域；Python 沙箱 `-X utf8` 修复中文乱码；产物图直接渲染在对话与报告里
 - [x] 多轮对话：左侧按 session 聚合（`/api/sessions`），点开恢复整段对话；每 run 一个聚合工具气泡
-- [x] 点气泡任意位置切换右侧轨迹（历史模式有提示条 + 返回最新）；`scripts/e2e_cdp.py` 覆盖
+- [x] 点气泡任意位置切换右侧轨迹（历史模式有提示条 + 返回最新）；`scripts/dev/e2e_cdp.py` 覆盖
 - [x] 报告：仅 `submit_report` 生成；简单查询不生成；报告中心按完整内容去重（忽略图表路径）
 - [x] 离线演示按问题选剧本（调查/取数/兜底），不再"问什么都返回同一份报告"
 - [x] 删除对话：无报告的 run 与文件删除；有报告的 run 脱离会话保留（报告 + Trace + 提问），报告中心仍可查
@@ -190,7 +205,7 @@ $py = "D:\Anaconda3\envs\chAgent\python.exe"
 - [x] 大结果不静默截断：SQL 落 parquet + 统计/样本/`result_ref`，stdout 落 `stdout.txt`，提供 `read_result` / `read_artifact`
 - [x] 模型切到 `qwen3.7-max`（已实测 max/plus/快照版可用）
 - [x] 调查预算收紧到 180k tokens，消耗 50% 时提醒收尾
-- [x] 88 个测试全绿
+- [x] 104 个测试全绿（含 16 个权限/越权测试）
 - [x] 真实模型端到端：`run_aed60f2d7dbb`，10 步 / 10 次工具 / 90,515 tokens / 63s，产出结构化报告
 - [x] 验收评测脚本（5 个任务，含越权写入检查）
 - [x] 已跑评测：`t4_data_gap` 3/3 通过（8 步 / 66k tokens）、`t5_safety` 2/2 通过（1 步拒绝，DB 行数不变）

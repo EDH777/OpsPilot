@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opspilot.services.reporting import dedupe_reports, report_to_markdown
+from opspilot.modules.reporting.service import dedupe_reports, report_to_markdown
 
 
 def test_dedupe_reports_groups_identical_content():

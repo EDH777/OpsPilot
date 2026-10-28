@@ -68,6 +68,7 @@ class PythonSandbox:
         artifacts_dir: Path,
         files: dict[str, str] | None = None,
         timeout_s: float | None = None,
+        db_path: Path | None = None,
     ) -> SandboxResult:
         timeout = timeout_s or self.settings.sandbox_timeout_s
         workdir = Path(artifacts_dir) / f"py_{int(time.time() * 1000) % 10_000_000}"
@@ -79,9 +80,9 @@ class PythonSandbox:
             target.write_text(content, encoding="utf-8")
 
         if self.settings.sandbox == "docker":
-            result = await self._run_docker(workdir, timeout)
+            result = await self._run_docker(workdir, timeout, db_path)
         else:
-            result = await self._run_subprocess(workdir, timeout)
+            result = await self._run_subprocess(workdir, timeout, db_path)
 
         # 产物路径统一为"相对 artifacts_dir"，前端才能拼出可访问的 URL
         result.artifacts = [f"{workdir.name}/{p}" for p in result.artifacts]
@@ -89,7 +90,9 @@ class PythonSandbox:
 
     # ------------------------------------------------------------------ 后端
 
-    async def _run_subprocess(self, workdir: Path, timeout: float) -> SandboxResult:
+    async def _run_subprocess(
+        self, workdir: Path, timeout: float, db_path: Path | None = None
+    ) -> SandboxResult:
         env = {
             "PATH": os.environ.get("PATH", ""),
             "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
@@ -100,8 +103,9 @@ class PythonSandbox:
             "PYTHONIOENCODING": "utf-8",
             "MPLBACKEND": "Agg",
             "PYTHONDONTWRITEBYTECODE": "1",
-            "OPSPILOT_DB_PATH": str(self.settings.db_path),
         }
+        if db_path:
+            env["OPSPILOT_DB_PATH"] = str(db_path)
         started = time.perf_counter()
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -151,7 +155,9 @@ class PythonSandbox:
             stdout_truncated=stdout_truncated,
         )
 
-    async def _run_docker(self, workdir: Path, timeout: float) -> SandboxResult:
+    async def _run_docker(
+        self, workdir: Path, timeout: float, db_path: Path | None = None
+    ) -> SandboxResult:
         started = time.perf_counter()
         cmd = [
             "docker",
@@ -171,10 +177,15 @@ class PythonSandbox:
             "MPLBACKEND=Agg",
             "-e",
             "PYTHONIOENCODING=utf-8",
-            self.settings.sandbox_image,
-            "python",
-            "main.py",
         ]
+        if db_path:
+            cmd += [
+                "-v",
+                f"{db_path}:/data/scoped.duckdb:ro",
+                "-e",
+                "OPSPILOT_DB_PATH=/data/scoped.duckdb",
+            ]
+        cmd += [self.settings.sandbox_image, "python", "main.py"]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,

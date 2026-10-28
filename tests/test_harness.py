@@ -179,8 +179,14 @@ class EchoArgs(BaseModel):
 
 
 @pytest.fixture
-def ctx(settings, tmp_path: Path) -> ToolContext:
-    return ToolContext(run_id="run_test", settings=settings, artifacts_dir=tmp_path / "artifacts")
+def ctx(settings, tmp_path: Path, test_principal, audit) -> ToolContext:
+    return ToolContext(
+        run_id="run_test",
+        principal=test_principal,
+        audit=audit,
+        settings=settings,
+        artifacts_dir=tmp_path / "artifacts",
+    )
 
 
 @pytest.fixture
@@ -256,7 +262,7 @@ async def test_executor_classifies_not_found(executor, ctx):
     assert result.error.kind is ErrorKind.NOT_FOUND
 
 
-async def test_executor_emits_artifacts_in_event(tmp_path: Path):
+async def test_executor_emits_artifacts_in_event(tmp_path: Path, test_principal, audit):
     reg = ToolRegistry()
 
     class Args(BaseModel):
@@ -269,6 +275,8 @@ async def test_executor_emits_artifacts_in_event(tmp_path: Path):
     events: list[tuple[str, dict]] = []
     context = ToolContext(
         run_id="run_art",
+        principal=test_principal,
+        audit=audit,
         settings=type("S", (), {"tool_timeout_s": 5})(),
         artifacts_dir=tmp_path,
         emit=lambda name, payload: events.append((name, payload)),
@@ -345,7 +353,7 @@ def test_schema_migration_from_legacy_db(tmp_path: Path):
     con.close()
 
     store = StateStore(db)
-    assert store.schema_version == 2
+    assert store.schema_version == 3
     columns = {r[1] for r in store._conn.execute("PRAGMA table_info(runs)").fetchall()}
     assert "resume_count" in columns
     assert store.load("old")["task"] == "老任务"

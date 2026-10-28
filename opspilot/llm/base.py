@@ -35,10 +35,6 @@ class LLMResponse:
     latency_ms: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def wants_tools(self) -> bool:
-        return bool(self.tool_calls)
-
 
 class BaseLLM(abc.ABC):
     """所有模型客户端的最小契约：一次补全，返回文本和/或工具调用。"""

@@ -1,4 +1,4 @@
-"""工具层公共辅助：只读连接、结果序列化。"""
+"""工具层公共辅助：只读连接、结果序列化、产物路径校验。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ from typing import Any
 
 import duckdb
 
+from opspilot.harness.errors import ErrorKind, ToolError
+from opspilot.harness.registry import ToolContext
+
 
 def connect_readonly(db_path: Path) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(db_path), read_only=True)
@@ -19,6 +22,20 @@ def connect_readonly(db_path: Path) -> duckdb.DuckDBPyConnection:
     except Exception:  # noqa: BLE001 - 低版本 duckdb 可能不支持，不影响查询
         pass
     return con
+
+
+def resolve_artifact(ctx: ToolContext, ref: str, suffixes: set[str]) -> Path:
+    """把模型给的相对路径收敛到当前 run 的 artifacts 目录内。"""
+    base = ctx.artifacts_dir.resolve()
+    path = (base / ref).resolve()
+    if not path.is_relative_to(base):
+        raise ToolError(ErrorKind.PERMISSION_DENIED, "产物路径越界", hint="只能读取本 run 的产物")
+    if path.suffix.lower() not in suffixes:
+        allowed = " / ".join(sorted(suffixes))
+        raise ToolError(ErrorKind.INVALID_ARGUMENT, f"不支持的文件类型，仅支持 {allowed}")
+    if not path.is_file():
+        raise ToolError(ErrorKind.NOT_FOUND, f"产物不存在：{ref}", hint="先确认工具返回的 artifacts / ref")
+    return path
 
 
 def jsonable(value: Any) -> Any:

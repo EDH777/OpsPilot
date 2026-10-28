@@ -23,6 +23,8 @@ from pydantic import BaseModel, ValidationError
 from opspilot.core.types import ToolCall
 from opspilot.harness.errors import ErrorKind, ToolError, classify_exception
 from opspilot.harness.registry import ToolContext, ToolRegistry, ToolSpec
+from opspilot.security.access import bind_scope
+from opspilot.security.model import ROLES
 
 _DATE_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ].*)?$")
 _MONTH_RE = re.compile(r"^(\d{4})[-/.](\d{1,2})$")
@@ -85,9 +87,27 @@ class ToolExecutor:
         )
 
         try:
-            spec = self._resolve(call.name)
+            # 先判“存在但未授权”与“根本不存在”：
+            # 已注册但角色未授权 -> PERMISSION_DENIED；未注册 -> UNKNOWN_TOOL。
+            if self.registry.has(call.name) and call.name not in ROLES[ctx.principal.role].tools:
+                return self._deny(
+                    call, ctx, started,
+                    reason="TOOL_NOT_GRANTED",
+                    message="当前角色不能使用该工具",
+                    hint="请使用已提供的工具完成分析。",
+                )
+
+            spec = self._resolve(call.name, ctx.principal)
+            ctx.audit.record(
+                action=f"tool.call:{call.name}",
+                decision="allow",
+                user_id=ctx.principal.user_id,
+                role=ctx.principal.role,
+                run_id=ctx.run_id,
+            )
             raw = self._parse_arguments(call)
             fixed, repairs = repair_arguments(raw, spec.args_model)
+            fixed = bind_scope(call.name, fixed, ctx.principal)
             if repairs:
                 ctx.publish("arg_repaired", call_id=call.id, name=call.name, repairs=repairs)
             args = self._validate(spec, fixed)
@@ -103,6 +123,22 @@ class ToolExecutor:
                 repairs=repairs,
             )
         except ToolError as exc:
+            if exc.kind is ErrorKind.PERMISSION_DENIED:
+                ctx.audit.record(
+                    action=f"tool.call:{call.name}",
+                    decision="deny",
+                    user_id=ctx.principal.user_id,
+                    role=ctx.principal.role,
+                    run_id=ctx.run_id,
+                    reason=(exc.message or "PERMISSION_DENIED")[:200],
+                )
+                ctx.publish(
+                    "policy_denied",
+                    call_id=call.id,
+                    name=call.name,
+                    reason="POLICY_DENIED",
+                    message=exc.message,
+                )
             result = ToolResult(
                 call_id=call.id,
                 name=call.name,
@@ -130,11 +166,59 @@ class ToolExecutor:
 
     # ------------------------------------------------------------------ 内部
 
-    def _resolve(self, name: str) -> ToolSpec:
+    def _deny(
+        self,
+        call: ToolCall,
+        ctx: ToolContext,
+        started: float,
+        *,
+        reason: str,
+        message: str,
+        hint: str,
+    ) -> ToolResult:
+        ctx.audit.record(
+            action=f"tool.call:{call.name}",
+            decision="deny",
+            user_id=ctx.principal.user_id,
+            role=ctx.principal.role,
+            run_id=ctx.run_id,
+            reason=reason,
+        )
+        ctx.publish(
+            "policy_denied",
+            call_id=call.id,
+            name=call.name,
+            reason=reason,
+            message=message,
+        )
+        result = ToolResult(
+            call_id=call.id,
+            name=call.name,
+            ok=False,
+            error=ToolError(ErrorKind.PERMISSION_DENIED, message, hint=hint),
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            attempts=0,
+        )
+        # 拒绝也要发结束事件，前端工具气泡才不会一直转圈
+        ctx.publish(
+            "tool_finished",
+            call_id=call.id,
+            name=call.name,
+            ok=False,
+            latency_ms=result.latency_ms,
+            attempts=0,
+            repairs=[],
+            error=result.error.to_dict() if result.error else None,
+            preview=result.content_for_llm(600),
+            artifacts=None,
+        )
+        return result
+
+    def _resolve(self, name: str, principal) -> ToolSpec:
         try:
             return self.registry.get(name)
         except KeyError:
-            available = "、".join(self.registry.names())
+            available = "、".join(self.registry.names_for(principal))
             raise ToolError(
                 ErrorKind.UNKNOWN_TOOL,
                 f"不存在名为 {name} 的工具",

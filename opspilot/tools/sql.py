@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 import uuid
 from pathlib import Path
@@ -22,15 +21,9 @@ from pydantic import BaseModel, Field
 
 from opspilot.harness.errors import ErrorKind, ToolError
 from opspilot.harness.registry import ToolContext
-from opspilot.tools._common import connect_readonly, jsonable
+from opspilot.security.data import connect_scoped, guard_scoped_sql
+from opspilot.tools._common import jsonable, resolve_artifact
 
-_READ_PREFIXES = ("select", "with", "describe", "desc", "show", "summarize", "explain", "table")
-_FORBIDDEN = re.compile(
-    r"\b(insert|update|delete|drop|create|alter|attach|detach|copy|export|import|install|load|"
-    r"pragma|truncate|grant|revoke|vacuum|checkpoint|call|merge|upsert)\b",
-    re.IGNORECASE,
-)
-_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _NUMERIC_HINTS = ("INT", "DOUBLE", "DECIMAL", "FLOAT", "REAL", "NUMERIC", "HUGEINT")
 
 
@@ -58,48 +51,15 @@ READ_RESULT_DESCRIPTION = (
 )
 
 
-def validate_readonly_sql(raw: str) -> str:
-    sql = _COMMENT.sub(" ", raw or "").strip()
-    if not sql:
-        raise ToolError(ErrorKind.INVALID_ARGUMENT, "SQL 为空", hint="请提供一条 SELECT 查询")
-
-    body = sql.rstrip()
-    while body.endswith(";"):
-        body = body[:-1].rstrip()
-    if ";" in body:
-        raise ToolError(
-            ErrorKind.PERMISSION_DENIED,
-            "一次只允许执行一条语句",
-            hint="请把多条语句拆成多次工具调用",
-        )
-
-    head = body.lstrip("( \t\r\n").lower()
-    if not head.startswith(_READ_PREFIXES):
-        raise ToolError(
-            ErrorKind.PERMISSION_DENIED,
-            "只允许只读查询（SELECT / WITH / DESCRIBE / SHOW）",
-            hint="本环境禁止写入、DDL 与数据导出；请改为查询。",
-        )
-
-    match = _FORBIDDEN.search(body)
-    if match:
-        raise ToolError(
-            ErrorKind.PERMISSION_DENIED,
-            f"SQL 包含被禁止的关键字：{match.group(1).upper()}",
-            hint="这里是只读分析环境，不支持修改数据或结构。",
-        )
-    return body
-
-
 async def run_sql(args: RunSqlArgs, ctx: ToolContext) -> dict[str, Any]:
-    sql = validate_readonly_sql(args.sql)
+    sql = guard_scoped_sql(args.sql, ctx.principal)
     threshold = ctx.settings.sql_summary_threshold
     preview = ctx.settings.sql_preview_rows
     timeout = ctx.settings.sql_timeout_s
     results_dir = ctx.artifacts_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    con = connect_readonly(ctx.settings.db_path)
+    con = connect_scoped(ctx.settings.db_path, ctx.principal)
     started = time.perf_counter()
     try:
         loop = asyncio.get_running_loop()
@@ -272,7 +232,7 @@ def _top_values(con, literal: str, types: list[tuple[str, str]]) -> dict[str, An
 
 
 async def read_result(args: ReadResultArgs, ctx: ToolContext) -> dict[str, Any]:
-    path = _resolve_artifact(ctx, args.result_ref, ".parquet")
+    path = resolve_artifact(ctx, args.result_ref, {".parquet"})
     con = duckdb.connect()
     try:
         literal = _sql_literal(path)
@@ -295,15 +255,3 @@ async def read_result(args: ReadResultArgs, ctx: ToolContext) -> dict[str, Any]:
         "row_count": total,
         "has_more": args.offset + len(rows) < total,
     }
-
-
-def _resolve_artifact(ctx: ToolContext, ref: str, suffix: str) -> Path:
-    base = ctx.artifacts_dir.resolve()
-    path = (base / ref).resolve()
-    if not path.is_relative_to(base):
-        raise ToolError(ErrorKind.PERMISSION_DENIED, "result_ref 越界", hint="只能读取本 run 的产物")
-    if path.suffix.lower() != suffix:
-        raise ToolError(ErrorKind.INVALID_ARGUMENT, f"result_ref 必须是 {suffix} 文件")
-    if not path.exists():
-        raise ToolError(ErrorKind.NOT_FOUND, f"结果文件不存在：{ref}", hint="先用 run_sql 生成结果")
-    return path

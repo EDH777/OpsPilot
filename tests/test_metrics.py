@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from opspilot.services.metrics import compute_metrics
+from opspilot.modules.metrics.service import compute_metrics
 
 
 def _write_trace(path: Path, events: list[dict]) -> None:

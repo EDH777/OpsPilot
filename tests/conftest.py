@@ -19,6 +19,9 @@ os.environ["OPSPILOT_LLM_BASE_URL"] = "http://127.0.0.1:9/v1"
 os.environ["OPSPILOT_BUSINESS_API_BASE"] = "http://127.0.0.1:8101"
 os.environ["OPSPILOT_SANDBOX"] = "subprocess"
 os.environ["OPSPILOT_SANDBOX_TIMEOUT_S"] = "20"
+os.environ["OPSPILOT_SESSION_SECRET"] = "test-session-secret"
+os.environ["OPSPILOT_DEMO_PASSWORD"] = "OpsPilot@2026"
+os.environ["OPSPILOT_ALLOWED_ORIGINS"] = "http://testserver"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -59,6 +62,42 @@ def registry():
     from opspilot.harness.registry import build_default_registry
 
     return build_default_registry()
+
+
+@pytest.fixture
+def principal():
+    from opspilot.security.auth import principal_for
+
+    return principal_for("boss")
+
+
+@pytest.fixture
+def manager_principal():
+    from opspilot.security.auth import principal_for
+
+    return principal_for("zhaolei")
+
+
+@pytest.fixture
+def test_principal():
+    """执行器单测用：允许测试自定义工具，生产角色表里没有 test。"""
+    from opspilot.security.model import ROLES, Principal, Role
+
+    if "test" not in ROLES:
+        ROLES["test"] = Role(
+            label="测试",
+            tools=frozenset({"ok", "boom", "slow", "flaky", "produce"}),
+            tables={},
+            row_scope=False,
+        )
+    return Principal(user_id="u_test", display_name="测试", role="test")
+
+
+@pytest.fixture
+def audit(tmp_path: Path):
+    from opspilot.security.audit import AuditLog
+
+    return AuditLog(tmp_path / "runs")
 
 
 @pytest.fixture

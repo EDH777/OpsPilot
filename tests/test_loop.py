@@ -30,7 +30,7 @@ def _loop(script, settings, store, registry):
     return AgentLoop(ScriptedLLM(script), settings=settings, state=store, registry=registry)
 
 
-async def test_full_investigation_completes_with_report(settings, state_store, registry):
+async def test_full_investigation_completes_with_report(settings, state_store, registry, principal):
     events: list[dict] = []
     script = [
         assistant(tool_calls=[tool_call("inspect_schema", {})]),
@@ -38,7 +38,9 @@ async def test_full_investigation_completes_with_report(settings, state_store, r
         assistant(tool_calls=[tool_call("submit_report", REPORT)]),
     ]
     loop = _loop(script, settings, state_store, registry)
-    result = await loop.run("测试调查", emit=lambda e: events.append(e.to_dict()))
+    result = await loop.run(
+        "测试调查", principal=principal, emit=lambda e: events.append(e.to_dict())
+    )
 
     assert result.status is RunStatus.COMPLETED
     assert result.report["title"] == "测试调查报告"
@@ -59,7 +61,7 @@ async def test_full_investigation_completes_with_report(settings, state_store, r
     assert row["messages"]
 
 
-async def test_tool_error_is_fed_back_and_model_recovers(settings, state_store, registry):
+async def test_tool_error_is_fed_back_and_model_recovers(settings, state_store, registry, principal):
     calls: list[list[Message]] = []
 
     def capture(messages, tools):
@@ -71,7 +73,7 @@ async def test_tool_error_is_fed_back_and_model_recovers(settings, state_store, 
         return assistant(content="调查完成，结论见报告。")
 
     loop = _loop([capture], settings, state_store, registry)
-    result = await loop.run("错误恢复测试")
+    result = await loop.run("错误恢复测试", principal=principal)
 
     assert result.status is RunStatus.COMPLETED
     tool_messages = [m for m in result.messages if m.role is Role.TOOL]
@@ -79,7 +81,7 @@ async def test_tool_error_is_fed_back_and_model_recovers(settings, state_store, 
     assert json.loads(tool_messages[0].content)["error"]["kind"] in {"not_found", "invalid_argument"}
 
 
-async def test_repeated_failure_triggers_guard_message(settings, state_store, registry):
+async def test_repeated_failure_triggers_guard_message(settings, state_store, registry, principal):
     events: list[dict] = []
     bad_args = {"sql": "SELECT * FROM missing_table"}
     script = [
@@ -88,28 +90,30 @@ async def test_repeated_failure_triggers_guard_message(settings, state_store, re
         assistant(content="无法完成，表不存在。"),
     ]
     loop = _loop(script, settings, state_store, registry)
-    result = await loop.run("重复失败测试", emit=lambda e: events.append(e.to_dict()))
+    result = await loop.run(
+        "重复失败测试", principal=principal, emit=lambda e: events.append(e.to_dict())
+    )
 
     guards = [m for m in result.messages if m.name == "harness_guard"]
     assert guards, "应注入熔断提示，阻止模型原样重试"
     assert any(e["type"] == "loop_guard" for e in events)
 
 
-async def test_budget_exceeded_stops_loop(settings, state_store, registry):
+async def test_budget_exceeded_stops_loop(settings, state_store, registry, principal):
     tight = settings.model_copy(update={"max_steps": 1})
     script = [
         assistant(tool_calls=[tool_call("inspect_schema", {})]),
         assistant(content="还想继续查"),
     ]
     loop = _loop(script, tight, state_store, registry)
-    result = await loop.run("预算测试")
+    result = await loop.run("预算测试", principal=principal)
 
     assert result.status is RunStatus.BUDGET_EXCEEDED
     assert result.budget["steps"] == 1
     assert state_store.load(result.run_id)["status"] == "budget_exceeded"
 
 
-async def test_resume_from_checkpoint(settings, tmp_path, registry):
+async def test_resume_from_checkpoint(settings, tmp_path, registry, principal):
     store = StateStore(tmp_path / "resume.sqlite3")
     messages = [
         Message(role=Role.SYSTEM, content="system"),
@@ -125,10 +129,12 @@ async def test_resume_from_checkpoint(settings, tmp_path, registry):
         step=1,
         messages=[m.to_dict() for m in messages],
         usage={"total_tokens": 100, "prompt_tokens": 60, "completion_tokens": 40, "llm_calls": 1},
+        owner_user_id=principal.user_id,
+        owner_role=principal.role,
     )
 
     loop = _loop([assistant(content="已完成续跑。")], settings, store, registry)
-    result = await loop.resume("run_resume")
+    result = await loop.resume("run_resume", principal=principal)
 
     assert result.status is RunStatus.COMPLETED
     assert result.budget["steps"] == 2  # 从已保存的第 1 步继续
@@ -136,14 +142,21 @@ async def test_resume_from_checkpoint(settings, tmp_path, registry):
     store.close()
 
 
-async def test_resume_rejects_finished_run(settings, state_store, registry):
-    state_store.save("run_done", status="completed", task="t", messages=[])
+async def test_resume_rejects_finished_run(settings, state_store, registry, principal):
+    state_store.save(
+        "run_done",
+        status="completed",
+        task="t",
+        messages=[],
+        owner_user_id=principal.user_id,
+        owner_role=principal.role,
+    )
     loop = _loop([], settings, state_store, registry)
     with pytest.raises(ValueError):
-        await loop.resume("run_done")
+        await loop.resume("run_done", principal=principal)
 
 
-async def test_second_run_inherits_session_history(settings, state_store, registry):
+async def test_second_run_inherits_session_history(settings, state_store, registry, principal):
     captured: list[list[Message]] = []
 
     def capture(messages, tools):
@@ -153,8 +166,12 @@ async def test_second_run_inherits_session_history(settings, state_store, regist
     loop = AgentLoop(
         ScriptedLLM([capture, capture]), settings=settings, state=state_store, registry=registry
     )
-    await loop.run("看一下二号车间这个月的用电情况", session_id="sess_ctx")
-    await loop.run("那看一下9月份的", session_id="sess_ctx")
+    await loop.run(
+        "看一下二号车间这个月的用电情况",
+        principal=principal,
+        session_id="sess_ctx",
+    )
+    await loop.run("那看一下9月份的", principal=principal, session_id="sess_ctx")
 
     second = captured[1]
     texts = [m.content or "" for m in second]
@@ -163,7 +180,7 @@ async def test_second_run_inherits_session_history(settings, state_store, regist
     assert any(m.name == "harness_history" for m in second), "应插入会话历史说明"
 
 
-async def test_resume_interrupted_run_increments_count(settings, tmp_path, registry):
+async def test_resume_interrupted_run_increments_count(settings, tmp_path, registry, principal):
     store = StateStore(tmp_path / "interrupted.sqlite3")
     messages = [Message(role=Role.SYSTEM, content="s"), Message(role=Role.USER, content="继续调查")]
     store.save(
@@ -174,11 +191,13 @@ async def test_resume_interrupted_run_increments_count(settings, tmp_path, regis
         step=1,
         messages=[m.to_dict() for m in messages],
         usage={"total_tokens": 100, "prompt_tokens": 60, "completion_tokens": 40, "llm_calls": 1},
+        owner_user_id=principal.user_id,
+        owner_role=principal.role,
     )
     loop = AgentLoop(
         ScriptedLLM([assistant(content="已继续完成")]), settings=settings, state=store, registry=registry
     )
-    result = await loop.resume("run_int")
+    result = await loop.resume("run_int", principal=principal)
 
     assert result.status is RunStatus.COMPLETED
     row = store.load("run_int")

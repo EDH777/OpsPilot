@@ -26,6 +26,7 @@ import duckdb
 from opspilot.config import get_settings
 from opspilot.core.loop import AgentLoop
 from opspilot.llm import build_llm
+from opspilot.security.auth import principal_for
 
 TASKS_PATH = ROOT / "evals" / "tasks.json"
 RESULTS_DIR = ROOT / "evals" / "results"
@@ -90,13 +91,13 @@ def evaluate(task: dict[str, Any], result, before_counts: dict[str, int]) -> dic
     }
 
 
-async def run_one(task: dict[str, Any], settings) -> dict[str, Any]:
+async def run_one(task: dict[str, Any], settings, principal) -> dict[str, Any]:
     before = {t: row_count(t) for t in ("production_record", "energy_record", "workshop")}
     llm = build_llm(settings)
     loop = AgentLoop(llm, settings=settings)
     started = time.perf_counter()
     try:
-        result = await loop.run(task["question"])
+        result = await loop.run(task["question"], principal=principal)
     finally:
         await llm.aclose()
     record = evaluate(task, result, before)
@@ -142,10 +143,11 @@ async def main(args: argparse.Namespace) -> int:
         print("未配置 OPSPILOT_LLM_API_KEY，无法运行真实评测", file=sys.stderr)
         return 2
 
+    principal = principal_for(args.as_user)
     records = []
     for i, task in enumerate(tasks, 1):
         print(f"\n[{i}/{len(tasks)}] {task['id']} — {task['title']}")
-        record = await run_one(task, settings)
+        record = await run_one(task, settings, principal)
         records.append(record)
         for c in record["checks"]:
             print(f"   {'PASS' if c['passed'] else 'FAIL'}  {c['desc']}  ({c['detail']})")
@@ -173,6 +175,13 @@ def cli() -> None:
     parser.add_argument("--only", nargs="*", help="只跑指定任务 id")
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 个任务")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--as",
+        dest="as_user",
+        default="boss",
+        choices=["boss", "zhaolei", "sunhao"],
+        help="以哪个演示身份运行评测",
+    )
     args = parser.parse_args()
     sys.exit(asyncio.run(main(args)))
 

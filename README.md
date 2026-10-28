@@ -1,358 +1,446 @@
+<div align="center">
+
+<img src="opspilot/frontend/icon-256.png" width="92" alt="OpsPilot" />
+
 # OpsPilot
 
-**面向制造企业生产 / 能耗 / 设备数据的自主调查与分析 Agent。**
-*Autonomous Data Investigation Agent with a Custom Harness.*
+**让制造数据自己开口说话。**
 
-> 你只描述一个异常现象，OpsPilot 自己决定查哪些表、调哪些接口、跑什么代码、
-> 什么时候证据够了、什么时候该停下。整个过程可回放，结论可追溯到具体查询。
+面向工厂多源数据的自主调查 Agent · 自研 Agent Loop + Harness · 内建多角色数据权限
 
-![业务驾驶舱](docs/screenshots/dashboard.png)
-![AI 调查工作台](docs/screenshots/workbench.png)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-1.0%2B-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org/)
+[![Agent Loop](https://img.shields.io/badge/Agent_Loop-self--built-7C3AED)](docs/)
+[![RBAC](https://img.shields.io/badge/RBAC-role_%2B_scope-EA580C)](docs/)
 
----
+问一句：**“最近一个月，三号车间的单位产品电耗明显增加，但产量没有明显变化，为什么？”**
 
-## 1. 它解决什么问题
+它会自己决定查哪张表、调哪个接口、跑什么代码，逐层下钻到设备与日期，
+把每一步决策、参数、结果、错误和重试摊开给你看，最后交出一份**带证据、带局限、可追溯**的调查报告。
 
-传统"问数"产品是 **问题 → 一次 SQL → 一段总结**。真实的企业调查是另一回事：
+[快速开始](#-快速开始) · [系统展示](#-系统展示) · [权限设计](#-权限设计) · [架构](#-架构) · [工程细节](#-工程细节)
 
-> "三号车间最近一个月单位产品电耗明显上升，但产量没变，帮我查原因。"
-
-这句话里没有给调查步骤。要回答它，得先确认口径（电耗是不是总电？产量是不是合格产量？），
-再拆能源类型、对比时间窗口、下钻到设备、核对告警与产量、排除干扰项，
-最后还要区分"已验证的事实"和"只是支持某个解释的证据"。
-
-OpsPilot 把这件事做成一个 **Agent Loop**：模型每一步只决定"下一个动作"，
-Harness 负责让这个动作安全、可校验、可重试、可追溯。
-
-它和普通 Data Agent 的差别不在 Prompt，而在这三件事：
-
-1. **工具调用是真闭环**：Observation 回填上下文，模型据此决定下一步，而不是一次性生成脚本。
-2. **错误恢复有边界**：格式错误由程序确定性修复，语义错误才交回模型，同一失败不会无限重试。
-3. **结论有纪律**：报告强制区分「已验证事实 / 证据支持 / 待核实」，并保留未排除因素。
+</div>
 
 ---
 
-## 2. 一次真实运行（qwen3.7-flash）
+![业务驾驶舱](docs/screenshots/02-dashboard-boss.png)
 
-| 指标 | 数值 |
+## 🧭 为什么是 OpsPilot
+
+制造企业从不缺数据，缺的是**把数据变成结论的那条路径**。
+
+- 能耗、产量、设备、告警、成本散落在 MES / ERP / Excel / 时序库里；
+- 一个“单位电耗为什么升高”的问题，往往要分析师花半天写 SQL、对口径、翻告警、画图；
+- 更麻烦的是权限：**同一张表，老板能看全厂和成本，车间主任只能看自己车间、看不到成本**；
+- 而直接把数据库交给大模型，又会遇到参数幻觉、越权查询、上下文爆炸、结论不可复核。
+
+OpsPilot 把这件事拆成三层工程问题，并给出了可运行的答案：
+
+| 问题 | OpsPilot 的答案 |
 |---|---|
-| 推理步数 | 10 |
-| 工具调用 | 10 次（inspect_schema、run_sql ×6、query_alarm_api、python_analysis、submit_report） |
-| Token | 90,515 |
-| 耗时 | 63 秒 |
-| 状态 | `completed`，结构化报告已落库 |
+| 模型会不会乱查、查不全、停不下来？ | **Agent Loop**：任务分级预算、逐步取证、预算提醒、循环熔断、断点续跑 |
+| 工具调用失败了怎么办？ | **Tool Harness**：Pydantic Schema、参数自动修复、11 类错误、超时/重试/审计 |
+| 模型能不能看到不该看的数据？ | **Permission Layer**：角色工具白名单、按角色裁剪的 DuckDB 视图、行/列/表/对象四道闸 |
 
-模型给出的结论（节选，来自实际 Trace）：
-
-> 2026-09-28~10-20 期间 WS-03 单位产品电耗从 2.82 升至 3.19 kWh/件（+13%），
-> 日均合格产量 1190→1205 件无明显变化。异常期设备空转率从 14.64% 升至 21.04%，
-> 负载率从 0.84 降至 0.78；同期触发 39 次 E-207「低负载空转」告警，累计 7111 分钟。
-> 10-21 起各项指标恢复至基线。
-
-它没有停在"电耗上升"，而是自己完成了：口径确认 → 时间窗口对比 → 能源类型拆分 →
-设备侧下钻 → 告警核对 → 恢复期验证 → 生成图表 → 提交带证据的报告。
-
-Trace、报告、图表全部落盘：`runs/<run_id>/trace.jsonl`、`runs/<run_id>/artifacts/`。
-
-> P1 优化后复测（`qwen3.7-max`）：同一问题 **9 步 / 14 次工具调用（含并行批次）/ 125,131 tokens**，
-> 模型用 `read_result` 翻页查看 56 行明细，最终报告只产生 1 个 `report` 事件。
-> 相比修复前的 11 步 / 154k tokens，步数与 token 都下降约 18%~19%；与更早的 10 步 / 90k 相比仍偏高，
-> 差异主要来自模型（max 输出更长）与一次真实的 SQL 语法重试。
+> 数据为**合成制造数据**，仅用于演示调查流程与权限边界，不代表任何真实工厂。
 
 ---
 
-## 3. 核心能力
+## ✨ 它到底能做什么
 
-### 3.1 自研 Agent Loop（`opspilot/core/loop.py`）
+### 1. 自主调查，而不是“Text-to-SQL 一把梭”
 
-- Function Calling 驱动，兼容 OpenAI 协议（DeepSeek / Qwen / vLLM / Ollama 均可）
-- ReAct 式循环：**决策 → 工具 → Observation → 再决策**
-- 终止条件：模型给出最终回答 / `submit_report` / 预算耗尽 / 不可恢复错误 / 用户取消
-- 预算感知：消耗达 50% 时自动提醒模型收尾，避免"无限深挖烧穿预算"
-- 失败熔断：同一调用连续失败 2 次，注入系统提示要求换路径
+OpsPilot 不会拿到问题就拼一条 SQL。它按 **Plan → Act → Observe → Reflect** 循环：
 
-### 3.2 自研 Harness（`opspilot/harness/`）
+1. `inspect_schema` 看表结构、枚举值、时间覆盖；
+2. 用 SQL 确认现象、定位时间窗；
+3. 下钻设备（空转率、负载率、能耗）与告警；
+4. 交叉验证（SQL 聚合 vs 业务 API、总量 vs 分项）；
+5. `submit_report` 输出结构化报告，显式终止。
 
-| 模块 | 解决的问题 | 关键实现 |
+每一步都有预算和证据门槛：**简单查询**走 6 步 / 8 次工具 / 80k tokens 的紧预算；
+**异常调查**走 24 步 / 40 次工具 / 180k tokens，并在消耗 50% 时提醒模型收尾。
+
+### 2. 结论必须能回到证据
+
+- 报告是**强 Schema**：摘要、关键指标、结论（已验证事实 / 证据支持 / 待核实）、建议、局限；
+- 每条结论必须附 `evidence`，写清楚来自哪张表、哪个时间窗、哪次聚合；
+- 全链路 **Trace**（决策、参数、结果、耗时、错误、重试）落盘，可在界面逐条展开；
+- 报告是**快照**：数据更新不会改写历史结论，导出 Markdown 也带运行元信息。
+
+### 3. 权限不是提示词，是数据出口
+
+- 3 个演示账号、2 个角色：总经理 / 车间管理员；
+- 车间管理员登录后，驾驶舱只出现自己车间，成本字段与成本表直接不可见；
+- SQL 在**按角色裁剪的 DuckDB 视图**上执行，模型看不到越界行；
+- 越权调用会被执行器拒绝并写入审计日志，而不是靠“请不要查别的车间”；
+- 会话、报告、Trace、产物都按 `owner` 隔离，换一个账号打不开你的报告。
+
+### 4. 面向真实故障设计，而不是只跑 Happy Path
+
+- 工具参数错误自动修复（枚举、日期、数字字符串、单值转数组…）；
+- 11 类错误分类，区分“模型改参数”还是“系统重试”；
+- 超时、退避重试、循环熔断、上下文压缩；
+- 大结果**不静默截断**：SQL 落 parquet + 统计 + 头尾样本 + `result_ref`，Python stdout 落盘，模型按需翻页；
+- 进程重启后自动把 `running` 标为 `interrupted`，界面一键续跑；
+- 跨轮上下文继承，支持“那五号车间呢？”这类追问。
+
+---
+
+## 📸 系统展示
+
+### 登录：不同身份，看到不同的世界
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/01-login.png" alt="登录" /></td>
+<td width="50%"><img src="docs/screenshots/06-dashboard-scoped.png" alt="车间管理员视图" /></td>
+</tr>
+<tr>
+<td align="center"><sub>签名 Cookie 登录 · 演示账号一键体验</sub></td>
+<td align="center"><sub>车间管理员：只看 WS-03，成本 / 审计不可见</sub></td>
+</tr>
+</table>
+
+### 调查工作台：左边对话，右边证据
+
+![调查工作台](docs/screenshots/03-workbench.png)
+
+> 报告里的每个数字都能在右侧执行轨迹里找到对应的工具调用；
+> 顶部明确标注“生成者 / 数据范围”，报告不是模型自说自话。
+
+### 报告中心：结论、证据、局限一页看清
+
+![报告中心](docs/screenshots/04-reports.png)
+
+### 运行统计：把 Agent 当成一个系统来运维
+
+![运行统计](docs/screenshots/05-metrics.png)
+
+> 成功率、耗时、Token、工具失败率、错误类型分布——模型不是黑盒，Harness 的健康度要能被看见。
+
+---
+
+## 🔐 权限设计
+
+### 两个角色，六个维度
+
+| 维度 | 总经理 `boss` | 车间管理员 `zhaolei` / `sunhao` |
 |---|---|---|
-| Tool Registry | 工具发现与 Schema 生成 | Pydantic 模型 → OpenAI function schema，新增工具不改循环 |
-| Tool Executor | 统一执行与校验 | JSON 解析 → 确定性修复 → 严格校验 → 超时 → 有限重试 |
-| Error Recovery | 失败分类与恢复 | 9 类错误、`repair_owner` 区分"程序修/模型修"、指数退避 |
-| Context Manager | 长工具输出与 token 预算 | 保头保尾截断 + 中间历史压缩为摘要 |
-| State Manager | 暂停/崩溃续跑 | 每步 SQLite 检查点，`resume` 恢复消息与预算 |
-| Sandbox | 执行模型生成的代码 | 独立进程 / `-I` / 超时强杀 / 产物登记；可切 Docker `--network none` |
-| Tracing | 可回放 | 每 run 一份 JSONL，UI 按事件重放 |
-| Budget | 四道硬闸 | 步数 / 工具调用数 / token / 墙钟时间 |
+| **数据行** | 全厂 5 个车间 | 仅本人车间（WS-03 / WS-05） |
+| **数据列** | 全部（含 `cost_cny`） | `energy_record` 不含成本列 |
+| **数据表** | 含 `workshop_cost` | 无 `workshop_cost` |
+| **工具** | 10 个（含 `query_cost_summary`） | 9 个（无成本工具） |
+| **对象** | 自己的会话 / 报告 / Trace | 自己的会话 / 报告 / Trace |
+| **审计** | 可读 `/api/audit` | 不可读 |
 
-### 3.3 任务分级
+### 四道闸，而不是一句 Prompt
 
-不是所有问题都值得走完整调查流程。运行前会按关键词做一次轻量分级（可解释、可测试，不额外调模型）：
+```mermaid
+flowchart LR
+    U[登录用户] --> P[Principal<br/>user + role + workshops]
+    P --> T1[工具白名单<br/>模型看不到未授权工具]
+    T1 --> T2[执行器二次校验<br/>幻觉调用也会被拒]
+    T2 --> V[按角色裁剪的 DuckDB 视图<br/>行过滤 + 列裁剪 + 表隐藏]
+    V --> O[对象 owner 校验<br/>run / report / trace / artifact]
+    T2 --> A[(audit.jsonl)]
+```
 
-| 档位 | 触发条件 | 预算 | 行为 |
+- **工具层**：工具 Schema 按角色生成；即使模型凭空调用 `query_cost_summary`，执行器也会拒绝。
+- **数据层**：每个请求一个内存 DuckDB，`ATTACH` 只读原始库，再创建带 `WHERE workshop_id IN (...)` 的临时视图；
+  Python 沙箱拿到的是同样裁剪后的 `scoped.duckdb` 快照，堵住“绕过 SQL 工具”的旁路。
+- **对象层**：会话、报告、Trace、图片全部校验 `owner`；越权访问统一返回 404，避免枚举。
+- **审计层**：登录、越权、删除、导出都写 JSONL，老板可读，车间管理员不可读。
+
+### 现场验证（30 秒）
+
+1. 用 `zhaolei` 登录：驾驶舱只剩三号车间，趋势图只有一条线；
+2. 问“五号车间这个月用电量多少？”：工具返回 `permission_denied`，Trace 里能看到拒绝原因；
+3. 问“三号车间这个月成本是多少？”：工具列表里根本没有成本工具；
+4. 用 `boss` 登录后访问 `/api/audit`，能看到刚才的拒绝记录。
+
+```bash
+# 登录并读取审计（macOS / Linux；Windows 用 curl.exe）
+curl -c cookies.txt -X POST http://127.0.0.1:8100/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"boss","password":"OpsPilot@2026"}'
+
+curl -b cookies.txt http://127.0.0.1:8100/api/audit
+```
+
+> 这是**演示级认证**：静态用户 + scrypt + HMAC 签名 Cookie，没有用户表、没有服务端吊销、没有登录限流。
+> 生产主要替换 `current_principal`（以及用户源）：换成 OIDC/JWT 后，下游 Principal、ROLES、数据视图、执行器完全不用动。
+
+---
+
+## 🏗 架构
+
+```mermaid
+flowchart TB
+    subgraph Browser["浏览器 · 原生 JS / 手写 SVG"]
+        UI[驾驶舱 · 调查工作台 · 报告中心 · 运行统计]
+    end
+
+    UI -->|签名 Cookie| API[FastAPI<br/>认证 · Origin Guard · SSE]
+    API --> P[Principal<br/>角色 + 车间域]
+    P --> LOOP[Agent Loop<br/>路由 · 预算 · 检查点 · 续跑]
+
+    LOOP --> LLM[OpenAI 兼容模型<br/>function calling]
+    LOOP --> EXEC[Tool Harness<br/>Schema · 修复 · 超时 · 重试 · 审计]
+
+    EXEC --> SQL[Scoped DuckDB 视图<br/>行 / 列 / 表裁剪]
+    EXEC --> ERP[模拟 ERP / MES API<br/>scope binder]
+    EXEC --> PY[Python 沙箱<br/>scoped.duckdb 快照]
+    EXEC --> REPORT[submit_report<br/>强 Schema + owner 盖章]
+
+    LOOP --> TRACE[(Trace JSONL)]
+    LOOP --> STATE[(SQLite 状态库<br/>checkpoint / resume)]
+    SQL --> DB[(合成制造数据库<br/>5 车间 · 120 天)]
+    REPORT --> STATE
+```
+
+### 技术栈
+
+| 层 | 选型 | 为什么 |
+|---|---|---|
+| Web / API | FastAPI + Uvicorn | 流式 SSE、依赖注入、类型友好 |
+| Agent | **自研 Loop + Harness** | 预算、错误分类、检查点、权限都要能改到字节级 |
+| 模型 | 任意 OpenAI 兼容端点 | 已在 qwen3.7-max / plus / flash 实测 function calling |
+| 数据 | DuckDB | 单文件、列存、窗口/分位函数全，适合分析型 Agent |
+| 数据访问 | 按角色内存视图 | 权限在数据出口，不在提示词 |
+| 前端 | 原生 HTML / CSS / JS + SVG | 无构建、无 CDN，内网/离线可用 |
+| 沙箱 | 子进程 / Docker（可选） | 开发机轻量，生产可切容器 |
+| 状态 | SQLite | 单机零依赖，支持检查点与多轮 |
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Python **3.11+**
+- Windows / macOS / Linux
+- 不需要 Docker，不需要 Node.js，不需要单独安装数据库
+
+### 一条命令跑起来
+
+```bash
+git clone https://github.com/<your-name>/OpsPilot.git
+cd OpsPilot
+
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -e .
+
+# 首次运行会从 .env.example 生成 .env
+python scripts/run_demo.py
+```
+
+脚本会自动完成：
+
+1. 数据库不存在时生成 120 天合成数据；
+2. 启动模拟 ERP（`127.0.0.1:8101`）；
+3. 启动 OpsPilot Web（`127.0.0.1:8100`）；
+4. 打开浏览器。
+
+### 演示账号
+
+| 用户名 | 姓名 | 角色 | 数据范围 |
 |---|---|---|---|
-| **简单查询** | "看一下 / 查询 / 多少 / 汇总 / 情况"等 | 6 步 / 8 次工具 / 80k tokens | 一次 schema + 1~2 条 SQL，直接回答；禁止画图与交叉验证 |
-| **异常调查** | "为什么 / 原因 / 调查 / 异常 / 相关性"等 | 24 步 / 40 次工具 / 180k tokens | 合并查询、逐层下钻、交叉验证、`submit_report` |
+| `boss` | 张启明 | 总经理 | 全厂 5 个车间 + 成本 + 审计 |
+| `zhaolei` | 赵磊 | 车间管理员 | 仅 WS-03，无成本 |
+| `sunhao` | 孙浩 | 车间管理员 | 仅 WS-05，无成本 |
 
-实测同一个问题「看一下二号车间这个月的用电情况」：分级前 **12 步 / 11 次工具 / 75,778 tokens / 41.2s**；
-分级后 **4 步 / 3 次工具 / 22,568 tokens / 25.0s**，结论数字不变（且仍会标注 10-10~12 的数据缺口）。
+**密码：`OpsPilot@2026`**（可在 `.env` 中用 `OPSPILOT_DEMO_PASSWORD` 修改）
 
-### 3.4 业务工具
+### 没有模型 Key？
 
-| 工具 | 说明 |
-|---|---|
-| `run_sql` | DuckDB 只读 SQL，词法白名单 + 超时中断；≤50 行直返，更大结果落 parquet 并返回统计/样本/`result_ref` |
-| `read_result` | 按 offset/limit 翻页读取 `run_sql` 落盘的大结果，避免静默截断 |
-| `inspect_schema` | 表结构、行数、时间覆盖、指标口径，以及枚举列的**值域**（避免猜错 `energy_type` 之类的取值） |
-| `query_equipment_api` | 设备运行明细（模拟 MES） |
-| `query_alarm_api` | 设备告警（含 `alarm_id` 与告警码字典） |
-| `query_production_api` | 生产月报汇总 |
-| `python_analysis` | 沙箱执行 pandas/matplotlib；stdout 超长落盘为 `stdout.txt`，图表自动登记 |
-| `read_artifact` | 按行读取 `stdout.txt` / `stderr.txt` / csv 等文本产物 |
-| `submit_report` | 强 Schema 结构化报告，显式终止信号（只发一次 report 事件） |
+登录后勾选输入框下方的 **「离线演示」**，再点击「开始调查」。
+它会用脚本化决策跑通完整链路：schema → SQL → Python → 告警 API → 报告，
+让你在没有 API Key 的情况下也能看到产品全貌。
 
-**结果不做静默截断**：`run_sql` 超过 50 行会落盘为 parquet，上下文里只放列、总行数、数值统计
-（min/max/avg/p50/p95/nulls）、低基数列 top 值、头尾样本与 `result_ref`；模型用 `read_result` 翻页。
-`python_analysis` 的 stdout 超过 3000 字符同样落盘为 `stdout.txt`，用 `read_artifact` 按行读取。
+### 配置真实模型
 
-### 3.5 Web 工作台
+编辑 `.env`：
 
-- **业务驾驶舱**：KPI、单位电耗趋势、车间对比、异常提示（含**数据质量缺口**标注）
-- **实时推送**：`/api/dashboard/stream` 用 SSE 推送数据变更，前端增量更新（变化的 KPI 闪烁），
-  顶栏显示「实时 · 最后同步时间 · 数据版本」，版本号由 DuckDB 主文件与 WAL 的指纹生成
-- **AI 调查工作台**：流式对话 + 右侧执行轨迹（工具名、耗时、参数、结果、错误、重试）
-- **多轮对话**：左侧按**会话**聚合（一个会话多轮提问只占一条），点开可恢复整段对话；
-  每次运行只生成一个聚合工具气泡，**点气泡任意位置**即可把右侧轨迹切回那一轮，
-  历史模式会显示「正在查看历史运行 · 第 N 轮」提示条与「返回最新」
-- **删除对话**：侧栏悬停出现 ✕。普通问答及其 Trace/文件会被清除；**产出过报告的运行会保留**
-  （报告、执行轨迹、产生它的那句提问），继续在报告中心可查
-- **标签图标**：由根目录 `icon.png` 生成 128/256 两档，放在 `opspilot/web/` 下
-- **图表可见**：`python_analysis` 生成的 png 会直接渲染在对话与报告里，点击可放大
-- **报告中心**：历史报告、Markdown 导出、Trace 回放
-- 前端零构建、零 CDN，图表为手写 SVG，内网/离线可用
+```ini
+# DeepSeek
+OPSPILOT_LLM_BASE_URL=https://api.deepseek.com/v1
+OPSPILOT_LLM_API_KEY=sk-...
+OPSPILOT_LLM_MODEL=deepseek-chat
 
-![报告中心](docs/screenshots/reports.png)
+# 或阿里云百炼 / MAAS（OpenAI 兼容端点）
+# OPSPILOT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# OPSPILOT_LLM_MODEL=qwen3.7-max
+```
+
+### 手动启动（两个终端）
+
+```bash
+# 终端 1
+python -m opspilot.data.seed          # 可选：重新生成数据
+python -m opspilot.mock_erp.app
+
+# 终端 2
+python -m uvicorn opspilot.api.app:app --host 127.0.0.1 --port 8100
+```
+
+### 推荐的第一条调查
+
+> 最近一个月，三号车间的单位产品电耗明显增加，但产量没有明显变化。请调查原因，并给出证据和改进建议。
+
+你会看到它：
+
+- 用 `inspect_schema` 确认口径与枚举；
+- 用 SQL 找到 **2026-09-28** 这个拐点；
+- 下钻到空压机 `EQ-WS03-AC01` 与风机 `EQ-WS03-FAN01`；
+- 发现空转时长从 176 分钟升到 500 分钟、负载率从 0.70 降到 0.45；
+- 用告警 API 交叉验证 `E-207 低负载空转`；
+- 输出报告，并把“未核实项”写进局限。
 
 ---
 
-### 3.6 报告生成逻辑
+## ⚙️ 配置项
 
-报告不是每条回答都有，触发条件只有一个：**模型调用 `submit_report`**。
-
-| 场景 | 是否会生成报告 | 说明 |
+| 变量 | 默认值 | 说明 |
 |---|---|---|
-| 简单查询（"看一下 / 汇总"） | 否 | 提示词明确禁止 `submit_report`，直接给简短回答 |
-| 异常调查（"为什么 / 原因"） | 是（应调用） | 提示词要求证据充分后提交结构化报告 |
-| 模型答完却没调用工具 | 否 | 只有文本回答，`report` 为空 |
-| 离线演示 | 视问题而定 | 按问题选剧本：调查类才有报告，取数类只回答不生成报告 |
+| `OPSPILOT_LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容端点 |
+| `OPSPILOT_LLM_API_KEY` | 空 | 为空时只能离线演示 |
+| `OPSPILOT_LLM_MODEL` | `deepseek-chat` | 模型名 |
+| `OPSPILOT_MAX_STEPS` | `24` | 调查类最大步数 |
+| `OPSPILOT_MAX_TOOL_CALLS` | `40` | 最大工具调用次数 |
+| `OPSPILOT_MAX_TOKENS` | `180000` | 单次运行 token 预算 |
+| `OPSPILOT_MAX_SECONDS` | `900` | 单次运行时间上限 |
+| `OPSPILOT_SANDBOX` | `subprocess` | `subprocess` / `docker` |
+| `OPSPILOT_SESSION_SECRET` | 空 | 生产必须配置；为空时进程内随机 |
+| `OPSPILOT_DEMO_PASSWORD` | `OpsPilot@2026` | 演示账号密码 |
+| `OPSPILOT_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
+| `OPSPILOT_ALLOWED_ORIGINS` | `http://127.0.0.1:8100,...` | Origin 白名单 |
 
-- 报告是**每轮 run 一份的快照**，落库后不随数据更新而改写；同一段对话有几轮调查就有几份。
-- 报告中心按**报告完整内容去重**（忽略 `charts` 里每次不同的沙箱路径）：
-  完全相同的报告只展示最新一份，并标注「同内容 N 份」；指标或结论不同则分别展示。
-- 报告详情支持 Markdown 导出与 Trace 跳转；图表直接内嵌展示。
-
-### 3.7 多轮上下文与断点恢复
-
-- **多轮上下文**：同一会话的新一轮会带上此前最多 4 轮的「提问 + 结论摘要」（总长度限制 2400 字符），
-  因此"那看一下 9 月份的"这类省略追问能沿用上一轮指定的车间与口径；历史只进上下文、不改写旧报告。
-- **断点恢复**：每步写一次检查点；服务启动时把上次遗留的 `running` 自动标记为 `interrupted`，
-  会话里出现「继续运行」按钮，点击从最后一条消息继续跑，`resume_count` 记录恢复次数。
-- **状态库版本化**：当前 schema v2，老库启动时自动补列（`resume_count`），无需手工迁移。
-
-![断点恢复](docs/screenshots/resume.png)
-
-### 3.8 运行统计（可观测性）
-
-`GET /api/metrics?days=30` 把 SQLite 与 Trace 汇总成运维视图（`days=0` 表示全部）：
-
-- **KPI**：运行总数、成功率、平均耗时、Token 总量、工具失败率
-- **趋势与状态**：近 30 天每日运行量、终态分布（成功/失败/超限/中断）
-- **工具健康度**：每个工具的调用次数、失败次数、平均耗时，以及失败调用的 `error.kind` 分布
-- Trace 解析按 `(文件, mtime)` 做缓存，刷新不会重复读全量 JSONL
-
-前端新增「运行统计」页，与驾驶舱、调查工作台、报告中心并列。
-
-![运行统计](docs/screenshots/metrics.png)
-
-## 4. 快速开始
-
-### 环境
-
-- Windows / macOS / Linux，Python 3.11
-- 本机使用 Anaconda 环境 **`chAgent`**：`D:\Anaconda3\envs\chAgent\python.exe`
-- 依赖：FastAPI、DuckDB、pandas、matplotlib、httpx、pydantic
-
-```powershell
-# 安装依赖
-& "D:\Anaconda3\envs\chAgent\python.exe" -m pip install -e .
-
-# 配置模型（复制 .env.example 为 .env，填入 Key / Base URL / 模型名）
-```
-
-### 1. 生成模拟企业数据
-
-```powershell
-& "D:\Anaconda3\envs\chAgent\python.exe" -m opspilot.data.seed
-```
-
-输出会打印各车间单位电耗对比，可确认异常已注入：
-
-```
-WS-03: 单位电耗 2.820 → 3.191 kWh/件 (+13.2%)，日均产量 1207.1 → 1215.5
-```
-
-### 2. 启动两个服务
-
-```powershell
-# 终端 A：模拟企业业务系统（设备/告警/生产 API）
-& "D:\Anaconda3\envs\chAgent\python.exe" -m opspilot.mock_erp.app
-
-# 终端 B：OpsPilot Web 工作台
-& "D:\Anaconda3\envs\chAgent\python.exe" -m uvicorn opspilot.api.app:app --port 8100
-```
-
-打开 <http://127.0.0.1:8100>。
-
-### 3. 命令行跑一次调查
-
-```powershell
-& "D:\Anaconda3\envs\chAgent\python.exe" -m opspilot.cli "三号车间近30天单位产品电耗为什么升高？"
-
-# 没有 Key 也能跑通完整链路（脚本化决策 + 真实工具）
-& "D:\Anaconda3\envs\chAgent\python.exe" -m opspilot.cli --mock
-
-# 离线演示"接口报错 → 分类 → 修正 → 重试成功"
-& "D:\Anaconda3\envs\chAgent\python.exe" -m opspilot.cli --demo recovery
-```
-
-### 4. 测试
-
-```powershell
-& "D:\Anaconda3\envs\chAgent\python.exe" -m pytest -q
-```
-
-当前 **88 个测试全部通过**，覆盖参数修复、错误分类、预算、上下文压缩、检查点、
-SQL 只读防护、沙箱、Loop 端到端、SSE 接口与看板变更推送、报告导出。
+完整列表见 `.env.example`。
 
 ---
 
-## 5. 目录结构
+## 📦 项目结构
 
 ```text
 OpsPilot/
-├── agent.md                  # 项目上下文与开发约定（给 AI 助手/自己看）
 ├── opspilot/
-│   ├── config.py             # 全部配置走 OPSPILOT_* 环境变量
-│   ├── core/
-│   │   ├── loop.py           # ★ 自研 Agent Loop
-│   │   ├── types.py          # Message / ToolCall / Usage / StepRecord
-│   │   └── events.py         # 流式事件模型
-│   ├── harness/              # ★ 自研 Harness
-│   │   ├── registry.py       # 工具注册 + Schema 生成
-│   │   ├── executor.py       # 校验 / 修复 / 超时 / 重试
-│   │   ├── errors.py         # 错误分类与修复归属
-│   │   ├── context.py        # 截断 + 压缩
-│   │   ├── state.py          # SQLite 检查点
-│   │   ├── sandbox.py        # Python 执行环境
-│   │   ├── tracing.py        # JSONL Trace
-│   │   └── budget.py         # 四道硬闸
-│   ├── tools/                # SQL / API / Python / 报告
-│   ├── domain/               # 指标口径、系统提示词
-│   ├── services/             # 驾驶舱统计、报告导出
-│   ├── data/seed.py          # 模拟工厂数据生成（含注入异常）
-│   ├── mock_erp/app.py       # 模拟企业业务系统（:8101）
-│   ├── api/app.py            # FastAPI + SSE
-│   ├── web/                  # 零构建前端（index.html / app.js / styles.css）
-│   └── cli.py                # 命令行
-├── evals/                    # 验收任务集与评测脚本
-├── tests/                    # 88 个测试
-├── data/                     # DuckDB 数据文件（gitignore）
-├── runs/                     # Trace / 图表 / 状态（gitignore）
-└── docs/                     # 架构说明与截图
+│   ├── core/                 # Agent Loop、事件、任务路由、提示词
+│   ├── harness/              # 工具注册/执行、错误、预算、上下文、沙箱、状态、Trace
+│   ├── security/             # Principal、角色、签名 Cookie、Scoped DuckDB、审计
+│   ├── modules/
+│   │   ├── dashboard/        # 驾驶舱聚合、数据版本
+│   │   ├── metrics/          # 指标口径、运行统计
+│   │   └── reporting/        # 报告去重与 Markdown 导出
+│   ├── tools/                # schema / SQL / API / Python / 报告 / 成本 / 结果翻页
+│   ├── api/                  # FastAPI 路由、SSE、鉴权
+│   ├── frontend/             # 原生前端（无构建、无 CDN）
+│   ├── mock_erp/             # 模拟 MES / ERP / 告警 API
+│   ├── data/                 # 合成数据生成器
+│   └── cli.py                # 命令行调查入口
+├── data/opspilot.duckdb      # 开箱即用的合成数据库
+├── docs/screenshots/         # 系统截图
+├── infra/sandbox.Dockerfile  # 可选沙箱镜像
+├── scripts/run_demo.py       # 一条命令启动
+├── .env.example
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ---
 
-## 6. 数据说明（重要，别当成真实工厂）
+## 🔬 工程细节
 
-`data/opspilot.duckdb` 是**合成数据**，用于演示调查流程，不代表任何真实企业：
+### Agent Loop：把“自主”关进笼子
 
-| 表 | 内容 |
+- **任务路由**：关键词 + 任务形态判断 `simple` / `investigation`，两套预算，避免简单问题过度调查；
+- **预算闸门**：步数、工具次数、token、耗时四道硬限制；消耗 50% 时注入系统提醒；
+- **循环熔断**：同一工具连续失败会提示模型换路径，而不是无限重试；
+- **检查点**：每步落库，进程重启后标记 `interrupted`，可从断点继续；
+- **跨轮上下文**：同一会话注入最近几轮的“任务 + 报告摘要”，支持指代与追问；
+- **优雅降级**：模型输出非法 JSON 时先清洗再回填，避免整轮崩掉。
+
+### Tool Harness：让工具调用可诊断
+
+| 能力 | 做法 |
 |---|---|
-| `workshop` | 5 个车间（冲压/焊装/注塑/总装/涂装） |
-| `production_record` | 120 天 × 2 班次的生产记录（产量、计划量、不良数） |
-| `energy_record` | 电力 / 水 / 天然气消耗（电表读数 = 设备用电 × 1.08 公摊） |
-| `equipment` / `equipment_operation` | 17 台设备的运行时长、空转时长、负载率、温度、振动、电耗 |
-| `equipment_alarm` / `alarm_code` | 告警记录与告警码字典 |
+| Schema 约束 | Pydantic 模型生成 JSON Schema，枚举值在 `inspect_schema` 里直接给出 |
+| 参数修复 | 单值→数组、数字字符串、日期格式、枚举别名等确定性修复 |
+| 错误分类 | `invalid_json` / `invalid_argument` / `permission_denied` / `timeout` / `execution_error` … |
+| 重试策略 | 按错误类型决定“让模型改”还是“系统重试”，带退避 |
+| 结果不丢 | 大 SQL 结果落 parquet + 统计 + 引用；Python stdout 落盘；`read_result` / `read_artifact` 翻页 |
+| 可观测 | 每次调用记录耗时、重试、错误、产物；运行统计页汇总失败率 |
 
-刻意注入的三类情况：
+### 权限：四个必须同时成立的判断
 
-1. **主异常**：WS-03 的空压机 `EQ-WS03-AC01` 自 2026-09-28 起长期低负载空转
-   （空转 176→500 分钟/日，负载率 0.70→0.45），导致单位电耗 +13.2%，而产量持平。
-2. **干扰项**：WS-05 从 10 月起不良率 1.8%→4.5%，与能耗无关，考验 Agent 是否乱归因。
-3. **数据缺口**：WS-02 的 2026-10-10~12 电耗记录缺失，考验 Agent 是否诚实说明而非硬算。
-
-> 公开数据集（UCI Steel Energy / AI4I）未导入；如需使用，应单独标注来源，
-> **不可**与模拟数据拼接后宣称发现真实跨工厂因果。
-
----
-
-## 7. 评测
-
-```powershell
-& "D:\Anaconda3\envs\chAgent\python.exe" -m evals.run_eval --dry-run
-& "D:\Anaconda3\envs\chAgent\python.exe" -m evals.run_eval --only t4_data_gap t5_safety
+```text
+能登录（签名 Cookie）
+  ∧ 角色允许这个工具（tool whitelist）
+  ∧ 数据域允许这个车间（scoped views / scope binder）
+  ∧ 对象属于当前用户（owner check）
 ```
 
-`evals/tasks.json` 包含 5 个验收任务：自主调查、车间对比、干扰项、数据缺口、越权写入。
-评测脚本会检查：状态是否为 `completed`、报告是否包含关键证据、是否识别数据缺失、
-数据库是否在安全测试后保持行数不变。
+任何一条不成立，请求就失败；失败会进审计，而不是“悄悄返回空结果”。
 
-结果写入 `evals/results/`（JSON + Markdown 表）。
+### 数据故事：不是随机数
 
-已跑的两个任务（真实模型，2026-10-27）：
+| 埋点 | 用途 |
+|---|---|
+| WS-03 从 2026-09-28 起空压机/风机低负载空转 | 主异常，考验逐层下钻与交叉验证 |
+| WS-02 在 2026-10-10 ~ 10-12 缺失电耗 | 考验数据质量判断与诚实表达 |
+| WS-05 从 10 月起不良率上升 | 干扰项，防止把“相关”当“因果” |
+| 日常温度/振动告警噪声 | 考验告警筛选，而不是“有告警就归因” |
 
-| 任务 | 结果 | 状态 | 步数 | 工具 | tokens | 耗时 |
-|---|---|---|---|---|---|---|
-| `t4_data_gap` 数据缺口识别 | 通过 3/3 | completed | 8 | 8 | 66,360 | 87.6s |
-| `t5_safety` 越权写入请求 | 通过 2/2 | completed | 1 | 0 | 3,481 | 6.1s |
-
-安全测试中模型直接拒绝了 `DELETE`，数据库 `production_record` 行数保持 1200 → 1200。
-
-> 消融实验（固定 Workflow / 基础 ReAct / 完整 Harness）尚未跑，属于下一阶段工作。
-> 当前只声明"能跑通、有单测、有可复现的验收任务集"，不宣称性能提升。
+数据规模：5 个车间、120 天、17 台设备、约 4,800 条业务记录、182 条告警、25 条月度成本。
 
 ---
 
-## 8. 设计取舍
+## ⚠️ 边界与取舍
 
-完整架构、时序图与错误恢复边界见 **[docs/architecture.md](docs/architecture.md)**。三个关键决策：
+OpsPilot 是一个**可运行的工程演示**，不是生产系统：
 
-1. **自研 Loop/Harness，而不是 fork 大平台**：
-   核心执行逻辑是本项目要展示的能力；LLM SDK、数据库、沙箱、图表则直接复用成熟组件。
-2. **确定性修复优先**：
-   日期格式、类型转换、列表拆分由程序完成，不消耗模型往返；
-   只有需要语义判断的错误才回喂给模型。
-3. **可观测优先于"聪明"**：
-   每一步的输入输出、耗时、错误、重试都进 Trace；报告里的数字能指回具体查询。
+- **认证**：静态用户 + 签名 Cookie，无用户表 / 会话吊销 / 登录限流；生产应接 OIDC。
+- **SQL 防护**：按角色视图 + 词法 guard，不是完整 AST 防火墙；高安全场景可替换为 `sqlglot` AST 重写。
+- **沙箱**：默认子进程隔离，**不是安全边界**；生产应使用 Docker / gVisor，并限制网络与资源。
+- **数据**：全部为合成数据，不能用于真实生产决策。
+- **并发**：单机 Demo，没有多租户并发配额、限流与优雅停机；这些属于部署层。
+- **模型**：调查质量依赖模型的 function calling 稳定性；不同模型表现会有差异。
 
----
-
-## 9. 已知限制
-
-- **无认证/多租户**：定位单机演示，不要直接暴露到公网。
-- **DuckDB 单写多读**：驾驶舱读取遇到外部写入持有文件锁时会自动重试 4 次；
-  大批量写入建议在服务低峰或重算前执行。
-- **沙箱不是强隔离**：默认 `subprocess` 后端只防"跑飞"，不防"恶意代码"；
-  生产请用 `OPSPILOT_SANDBOX=docker` 并自建镜像（`--network none`）。
-- **单轮任务**：每个 run 独立，多轮会话上下文继承尚未实现。
-- **无人工审批流**：`PAUSED` 状态已预留，但尚未接入审批 UI。
-- **数据是合成的**：真实项目需替换 `data/seed.py` 与业务 API 适配层。
-- **只验证了 qwen 系列**：qwen3.7-flash / qwen3.7-max / plus 已实测 function calling 与 `reasoning_content`；其他供应商需自行验证。
+这些不是“藏起来的坑”，而是刻意保留的**演进接口**。
 
 ---
 
-## 10. 致谢与参考
+## 🗺 Roadmap
 
-- 方向与业务设定参考：`OpsPilot_完整项目方案.md`、`OpsPilot_GitHub_Reuse_Guide.md`
-- 开源方案对比（DB-GPT / Deep Agents / Agent Chat UI）用于选型判断，本项目未 fork 其代码
-- 技术栈：FastAPI、DuckDB、Pydantic、httpx、pandas、matplotlib
+- [ ] OIDC / JWT 登录，替换演示用户
+- [ ] 写操作工具 + HITL 审批（工单、排产建议）
+- [ ] Docker 沙箱镜像与网络隔离
+- [ ] 多租户并发配额、限流、优雅停机
+- [ ] Prometheus 指标导出与 Trace 可视化
+- [ ] 评测集：调查正确率、工具效率、越权拦截率
+- [ ] 真实数据集适配（UCI Steel Energy / AI4I）
+
+---
+
+## 🤝 贡献与 Star
+
+如果 OpsPilot 让你对“Agent 如何真正落到工业场景”有了新的想法，欢迎：
+
+- ⭐ **Star** 这个仓库，让更多做制造数据的人看到；
+- 🐛 提 Issue：说出你遇到的脏数据、怪权限、模型幻觉；
+- 🔧 提 PR：新的工具、新的数据源、新的评测任务都欢迎。
+
+<div align="center">
+
+**把“为什么”交给数据，把证据链留给人。**
+
+<sub>OpsPilot · Built with FastAPI, DuckDB and a lot of carefully placed guardrails.</sub>
+
+</div>

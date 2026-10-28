@@ -37,11 +37,6 @@ class OpenAICompatLLM(BaseLLM):
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def list_models(self) -> list[str]:
-        r = await self._client.get("/models")
-        r.raise_for_status()
-        return [m.get("id", "") for m in r.json().get("data", [])]
-
     async def complete(
         self,
         messages: list[Message],

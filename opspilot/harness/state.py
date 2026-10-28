@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS runs (
     report      TEXT,
     error       TEXT,
     resume_count INTEGER DEFAULT 0,
+    owner_user_id TEXT,
+    owner_role  TEXT,
     created_at  REAL,
     updated_at  REAL
 );
@@ -71,6 +73,20 @@ class StateStore:
                 self._conn.execute("ALTER TABLE runs ADD COLUMN resume_count INTEGER DEFAULT 0")
             current = 2
 
+        if current < 3:
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(runs)").fetchall()}
+            if "owner_user_id" not in columns:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN owner_user_id TEXT")
+            if "owner_role" not in columns:
+                self._conn.execute("ALTER TABLE runs ADD COLUMN owner_role TEXT")
+            # 演示环境：老 run 归给 boss，避免升级后历史记录全部消失。
+            # 生产应改为 legacy 隔离，再显式 claim。
+            self._conn.execute(
+                "UPDATE runs SET owner_user_id = 'u_boss', owner_role = 'executive' "
+                "WHERE owner_user_id IS NULL"
+            )
+            current = 3
+
         self._conn.execute(
             "INSERT INTO schema_meta (key, value) VALUES ('version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -99,6 +115,8 @@ class StateStore:
             "answer",
             "report",
             "error",
+            "owner_user_id",
+            "owner_role",
         }
         data = {k: v for k, v in fields.items() if k in allowed}
         for key in _JSON_FIELDS & data.keys():
@@ -132,31 +150,50 @@ class StateStore:
             return None
         return self._decode(dict(row))
 
-    def list_runs(self, session_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        sql = "SELECT run_id, session_id, task, title, status, step, answer, created_at, updated_at FROM runs"
+    def list_runs(
+        self,
+        session_id: str | None = None,
+        limit: int = 50,
+        owner_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT run_id, session_id, task, title, status, step, answer, "
+            "owner_user_id, owner_role, created_at, updated_at FROM runs"
+        )
+        clauses: list[str] = []
         params: list[Any] = []
         if session_id:
-            sql += " WHERE session_id = ?"
+            clauses.append("session_id = ?")
             params.append(session_id)
+        if owner_user_id:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def archive_session(self, session_id: str) -> dict[str, Any] | None:
+    def archive_session(
+        self, session_id: str, owner_user_id: str | None = None
+    ) -> dict[str, Any] | None:
         """删除对话，但保留产出过报告的运行。
 
         - 有报告的 run：脱离会话（session_id=NULL），清空 messages/answer，
           保留 task（产生报告的那句提问）、report、Trace 与产物目录；
-        - 没有报告的 run：整行删除，由调用方清理对应目录。
+        - 没有报告的 run：整行删除，由调用方清理对应目录；
+        - owner_user_id 非空时，只处理属于该用户的会话。
         """
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT run_id, task, report FROM runs WHERE session_id = ? "
-                "ORDER BY created_at ASC, rowid ASC",
-                (session_id,),
-            ).fetchall()
+            sql = "SELECT run_id, task, report, owner_user_id FROM runs WHERE session_id = ?"
+            params: list[Any] = [session_id]
+            if owner_user_id:
+                sql += " AND owner_user_id = ?"
+                params.append(owner_user_id)
+            sql += " ORDER BY created_at ASC, rowid ASC"
+            rows = self._conn.execute(sql, params).fetchall()
             if not rows:
                 return None
 
@@ -176,13 +213,22 @@ class StateStore:
             self._conn.commit()
         return {"kept": kept, "removed": removed, "queries": [r["task"] for r in rows if r["task"]]}
 
-    def list_reports(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_reports(
+        self, limit: int = 50, owner_user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT run_id, session_id, task, title, status, report, "
+            "owner_user_id, owner_role, created_at, updated_at "
+            "FROM runs WHERE report IS NOT NULL"
+        )
+        params: list[Any] = []
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+        params.append(limit)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT run_id, session_id, task, title, status, report, created_at, updated_at "
-                "FROM runs WHERE report IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [self._decode(dict(r)) for r in rows]
 
     def mark_interrupted_runs(self) -> int:
@@ -210,13 +256,17 @@ class StateStore:
         *,
         exclude_run_id: str | None = None,
         limit: int = 4,
+        owner_user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """取同一会话已结束的轮次，供新 run 继承指代与约束。"""
         sql = (
-            "SELECT run_id, task, answer, report, status, created_at FROM runs "
+            "SELECT run_id, task, answer, report, status, owner_user_id, created_at FROM runs "
             "WHERE session_id = ? AND status IN ('completed', 'failed')"
         )
         params: list[Any] = [session_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         if exclude_run_id:
             sql += " AND run_id != ?"
             params.append(exclude_run_id)
@@ -228,27 +278,35 @@ class StateStore:
         out.reverse()
         return out
 
-    def runs_since(self, since: float = 0.0, limit: int = 500) -> list[dict[str, Any]]:
+    def runs_since(
+        self, since: float = 0.0, limit: int = 500, owner_user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """按时间窗口取 run 元数据，供指标聚合使用（不取 messages/report 大字段）。"""
         sql = (
-            "SELECT run_id, session_id, status, step, usage, created_at, updated_at "
-            "FROM runs"
+            "SELECT run_id, session_id, status, step, usage, owner_user_id, owner_role, "
+            "created_at, updated_at FROM runs"
         )
+        clauses: list[str] = []
         params: list[Any] = []
         if since:
-            sql += " WHERE created_at >= ?"
+            clauses.append("created_at >= ?")
             params.append(since)
+        if owner_user_id:
+            clauses.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [self._decode(dict(r)) for r in rows]
 
-    def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_sessions(
+        self, limit: int = 20, owner_user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """会话维度：一个 session 下可能有多轮 run，侧栏应按会话展示。"""
-        with self._lock:
-            rows = self._conn.execute(
-                """
+        sql = """
                 SELECT s.session_id,
                        (SELECT r.task FROM runs r WHERE r.session_id = s.session_id
                         ORDER BY r.created_at ASC, r.rowid ASC LIMIT 1) AS title,
@@ -261,34 +319,33 @@ class StateStore:
                         ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_run_id
                 FROM runs s
                 WHERE s.session_id IS NOT NULL
-                GROUP BY s.session_id
-                ORDER BY last_at DESC, s.session_id
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+        """
+        params: list[Any] = []
+        if owner_user_id:
+            sql += " AND s.owner_user_id = ?"
+            params.append(owner_user_id)
+        sql += " GROUP BY s.session_id ORDER BY last_at DESC, s.session_id LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def session_runs(self, session_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    def session_runs(
+        self, session_id: str, limit: int = 200, owner_user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT run_id, session_id, task, status, step, usage, answer, report, "
+            "owner_user_id, owner_role, created_at FROM runs WHERE session_id = ?"
+        )
+        params: list[Any] = [session_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        sql += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+        params.append(limit)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT run_id, session_id, task, status, step, usage, answer, report, created_at "
-                "FROM runs WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ?",
-                (session_id, limit),
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         return [self._decode(dict(r)) for r in rows]
-
-    def sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT session_id, MAX(created_at) AS last_at, COUNT(*) AS runs
-                FROM runs WHERE session_id IS NOT NULL
-                GROUP BY session_id ORDER BY last_at DESC LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
 
     @staticmethod
     def _decode(row: dict[str, Any]) -> dict[str, Any]:
